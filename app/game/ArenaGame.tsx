@@ -12,6 +12,9 @@ import { ArenaAudio, type ArenaSound } from "./audio";
 import { createArenaRenderer } from "./renderer";
 import {
   DEFAULT_ARENA,
+  type ArenaCameraMode,
+  type ArenaCombatDirection,
+  type ArenaCombatPhase,
   type ArenaDefinition,
   type ArenaEffect,
   type ArenaEffectKind,
@@ -31,7 +34,7 @@ type ConnectionState =
   | "online"
   | "reconnecting"
   | "offline";
-type RenderMode = "checking" | "webgpu" | "canvas2d" | "unavailable";
+type RenderMode = "checking" | "webgpu" | "webgl2" | "unavailable";
 
 interface ClientPlayer extends ArenaPlayer {
   readonly name: string;
@@ -55,11 +58,18 @@ interface InputMemory {
   primary: boolean;
   secondary: boolean;
   utility: boolean;
+  attackHeld: boolean;
+  blockHeld: boolean;
+  feintQueued: boolean;
+  combatDirection: ArenaCombatDirection;
   dashQueued: boolean;
   gamepadDashHeld: boolean;
   gamepadPrimaryHeld: boolean;
   gamepadSecondaryHeld: boolean;
   gamepadUtilityHeld: boolean;
+  gamepadAttackHeld: boolean;
+  gamepadBlockHeld: boolean;
+  gamepadFeintHeld: boolean;
 }
 
 interface ParsedSnapshot {
@@ -83,19 +93,19 @@ const SPELLS = [
   {
     id: "primary" as const,
     name: "Cinder Shot",
-    key: "LMB",
+    key: "1",
     note: "Rapid ember",
   },
   {
     id: "secondary" as const,
     name: "Tide Ring",
-    key: "RMB",
+    key: "2",
     note: "Space control",
   },
   {
     id: "utility" as const,
     name: "Volt Lance",
-    key: "E",
+    key: "3",
     note: "Piercing line",
   },
   {
@@ -173,6 +183,32 @@ function colorFor(id: string, localId: string | null): string {
   return palette[Math.abs(hash) % palette.length];
 }
 
+const COMBAT_PHASES = new Set<ArenaCombatPhase>([
+  "idle",
+  "drawing",
+  "releasing",
+  "blocking",
+  "stunned",
+]);
+const COMBAT_DIRECTIONS = new Set<ArenaCombatDirection>([
+  "up",
+  "down",
+  "left",
+  "right",
+]);
+
+function combatPhase(value: unknown): ArenaCombatPhase {
+  return typeof value === "string" && COMBAT_PHASES.has(value as ArenaCombatPhase)
+    ? (value as ArenaCombatPhase)
+    : "idle";
+}
+
+function combatDirection(value: unknown): ArenaCombatDirection {
+  return typeof value === "string" && COMBAT_DIRECTIONS.has(value as ArenaCombatDirection)
+    ? (value as ArenaCombatDirection)
+    : "up";
+}
+
 function parseSnapshot(
   message: Record<string, unknown>,
   arena: ArenaDefinition,
@@ -208,6 +244,11 @@ function parseSnapshot(
         dashUntil: finite(player.dashUntil, 0, 0),
         isDashing: finite(player.dashUntil, 0) > serverTime,
         color: colorFor(id, localId),
+        combatPhase: combatPhase(player.combatPhase),
+        combatDirection: combatDirection(player.combatDirection),
+        combatStartedAt: finite(player.combatStartedAt, 0, 0),
+        charge: finite(player.charge, 0, 0, 1),
+        weapon: "arcane-blade",
         cooldowns: {
           dash: finite(cooldowns.dash, 0, 0),
           primary: finite(cooldowns.primary, 0, 0),
@@ -242,6 +283,10 @@ function parseSnapshot(
     "volt-lance",
     "spawn",
     "death",
+    "melee-swing",
+    "melee-hit",
+    "guard-impact",
+    "feint",
   ]);
   const effects = rawEffects
     .filter((effect) => allowedEffects.has(text(effect.type, "", 30)))
@@ -297,8 +342,8 @@ function renderCopy(mode: RenderMode): string {
   switch (mode) {
     case "webgpu":
       return "WebGPU active";
-    case "canvas2d":
-      return "Canvas fallback";
+    case "webgl2":
+      return "WebGL 2 fallback";
     case "unavailable":
       return "Renderer unavailable";
     default:
@@ -323,6 +368,7 @@ export default function ArenaGame() {
   const serverOffsetRef = useRef(0);
   const audioRef = useRef<ArenaAudio | null>(null);
   const soundEnabledRef = useRef(true);
+  const pointerLockFallbackRef = useRef(false);
   const seenEffectsRef = useRef(new Set<string>());
   const aliveRef = useRef(new Map<string, boolean>());
   const inputRef = useRef<InputMemory>({
@@ -332,11 +378,18 @@ export default function ArenaGame() {
     primary: false,
     secondary: false,
     utility: false,
+    attackHeld: false,
+    blockHeld: false,
+    feintQueued: false,
+    combatDirection: "up",
     dashQueued: false,
     gamepadDashHeld: false,
     gamepadPrimaryHeld: false,
     gamepadSecondaryHeld: false,
     gamepadUtilityHeld: false,
+    gamepadAttackHeld: false,
+    gamepadBlockHeld: false,
+    gamepadFeintHeld: false,
   });
 
   const [roomCode, setRoomCode] = useState("-----");
@@ -354,6 +407,8 @@ export default function ArenaGame() {
   const [networkNote, setNetworkNote] = useState("");
   const [gamepadConnected, setGamepadConnected] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [cameraMode, setCameraMode] = useState<ArenaCameraMode>("third-person");
+  const [pointerLocked, setPointerLocked] = useState(false);
 
   const playSound = useCallback((sound: ArenaSound) => {
     if (soundEnabledRef.current) audioRef.current?.play(sound);
@@ -466,7 +521,10 @@ export default function ArenaGame() {
         observer = new ResizeObserver(() => renderer.resize());
         observer.observe(canvas);
       })
-      .catch(() => setRenderMode("unavailable"));
+      .catch((error) => {
+        console.error("Unable to initialize the 3D arena", error);
+        setRenderMode("unavailable");
+      });
 
     return () => {
       active = false;
@@ -670,7 +728,7 @@ export default function ArenaGame() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTyping(event.target)) return;
       const code = event.code;
-      if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight", "KeyE"].includes(code)) {
+      if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight", "KeyQ", "KeyV", "Digit1", "Digit2", "Digit3"].includes(code)) {
         event.preventDefault();
       }
       input.keys.add(code);
@@ -678,7 +736,20 @@ export default function ArenaGame() {
         input.dashQueued = true;
         playSound("dash");
       }
-      if (code === "KeyE" && !event.repeat) playSound("volt");
+      if (code === "KeyQ" && !event.repeat) input.feintQueued = true;
+      if (code === "Digit1" && !event.repeat) playSound("cinder");
+      if (code === "Digit2" && !event.repeat) playSound("tide");
+      if (code === "Digit3" && !event.repeat) playSound("volt");
+      if (code === "KeyV" && !event.repeat) {
+        const renderer = rendererRef.current;
+        if (renderer) {
+          const next = renderer.getCameraMode() === "third-person"
+            ? "first-person"
+            : "third-person";
+          renderer.setCameraMode(next);
+          setCameraMode(next);
+        }
+      }
     };
     const onKeyUp = (event: KeyboardEvent) => input.keys.delete(event.code);
     const sendStop = () => {
@@ -697,6 +768,10 @@ export default function ArenaGame() {
             primary: false,
             secondary: false,
             utility: false,
+            attackHeld: false,
+            blockHeld: false,
+            feint: false,
+            combatDirection: input.combatDirection,
           }),
         );
       }
@@ -706,6 +781,9 @@ export default function ArenaGame() {
       input.primary = false;
       input.secondary = false;
       input.utility = false;
+      input.attackHeld = false;
+      input.blockHeld = false;
+      input.feintQueued = false;
       input.dashQueued = false;
       sendStop();
     };
@@ -713,53 +791,50 @@ export default function ArenaGame() {
       if (document.visibilityState === "hidden") onBlur();
     };
     const onPointerMove = (event: PointerEvent) => {
-      const bounds = canvas.getBoundingClientRect();
-      const arena = arenaRef.current;
-      const margin = Math.min(
-        54,
-        Math.max(12, Math.min(bounds.width, bounds.height) * 0.045),
-      );
-      const scale = Math.max(
-        1,
-        Math.min(
-          (bounds.width - margin * 2) / arena.width,
-          (bounds.height - margin * 2) / arena.height,
-        ),
-      );
-      const offsetX = (bounds.width - arena.width * scale) / 2;
-      const offsetY = (bounds.height - arena.height * scale) / 2;
-      const worldX = (event.clientX - bounds.left - offsetX) / Math.max(scale, 0.001);
-      const worldY = (event.clientY - bounds.top - offsetY) / Math.max(scale, 0.001);
-      const local = frameRef.current.players.find(
-        (player) => player.id === localIdRef.current,
-      );
-      const originX = local?.x ?? arena.width / 2;
-      const originY = local?.y ?? arena.height / 2;
-      const dx = worldX - originX;
-      const dy = worldY - originY;
-      const length = Math.hypot(dx, dy);
-      if (length > 0.001) {
-        input.aimX = dx / length;
-        input.aimY = dy / length;
+      if (
+        document.pointerLockElement !== canvas &&
+        !pointerLockFallbackRef.current
+      ) return;
+      rendererRef.current?.addLookDelta(event.movementX, event.movementY);
+      const horizontal = Math.abs(event.movementX);
+      const vertical = Math.abs(event.movementY);
+      if (Math.max(horizontal, vertical) >= 3) {
+        input.combatDirection = horizontal > vertical
+          ? event.movementX > 0 ? "right" : "left"
+          : event.movementY > 0 ? "down" : "up";
       }
     };
     const onPointerDown = (event: PointerEvent) => {
       canvas.focus({ preventScroll: true });
+      if (
+        document.pointerLockElement !== canvas &&
+        !pointerLockFallbackRef.current
+      ) {
+        void canvas.requestPointerLock().catch(() => {
+          pointerLockFallbackRef.current = true;
+          setPointerLocked(true);
+        });
+        event.preventDefault();
+        return;
+      }
       if (event.button === 0) {
-        input.primary = true;
-        playSound("cinder");
+        input.attackHeld = true;
+        playSound("swing");
       }
       if (event.button === 2) {
-        input.secondary = true;
-        playSound("tide");
+        input.blockHeld = true;
+        playSound("block");
       }
       event.preventDefault();
     };
     const onPointerUp = (event: PointerEvent) => {
-      if (event.button === 0) input.primary = false;
-      if (event.button === 2) input.secondary = false;
+      if (event.button === 0) input.attackHeld = false;
+      if (event.button === 2) input.blockHeld = false;
     };
     const onContextMenu = (event: MouseEvent) => event.preventDefault();
+    const onPointerLockChange = () => setPointerLocked(
+      document.pointerLockElement === canvas || pointerLockFallbackRef.current,
+    );
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
     window.addEventListener("keyup", onKeyUp);
@@ -769,6 +844,7 @@ export default function ArenaGame() {
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("contextmenu", onContextMenu);
+    document.addEventListener("pointerlockchange", onPointerLockChange);
 
     const inputTimer = window.setInterval(() => {
       let moveX =
@@ -777,9 +853,12 @@ export default function ArenaGame() {
       let moveY =
         Number(input.keys.has("KeyS") || input.keys.has("ArrowDown")) -
         Number(input.keys.has("KeyW") || input.keys.has("ArrowUp"));
-      let primary = input.primary;
-      let secondary = input.secondary;
-      let utility = input.keys.has("KeyE");
+      let primary = input.keys.has("Digit1");
+      let secondary = input.keys.has("Digit2");
+      let utility = input.keys.has("Digit3");
+      let attackHeld = input.attackHeld;
+      let blockHeld = input.blockHeld;
+      let feint = input.feintQueued;
 
       const gamepad = navigator.getGamepads?.().find(Boolean) || null;
       const hasGamepad = Boolean(gamepad);
@@ -798,17 +877,23 @@ export default function ArenaGame() {
         const gameAimX = deadzone(gamepad.axes[2] || 0);
         const gameAimY = deadzone(gamepad.axes[3] || 0);
         if (gameAimX || gameAimY) {
-          const length = Math.hypot(gameAimX, gameAimY) || 1;
-          input.aimX = gameAimX / length;
-          input.aimY = gameAimY / length;
+          rendererRef.current?.addLookDelta(gameAimX * 15, gameAimY * 12);
+          input.combatDirection = Math.abs(gameAimX) > Math.abs(gameAimY)
+            ? gameAimX > 0 ? "right" : "left"
+            : gameAimY > 0 ? "down" : "up";
         }
-        const padPrimary = Boolean(gamepad.buttons[7]?.pressed || gamepad.buttons[0]?.pressed);
-        const padSecondary = Boolean(gamepad.buttons[6]?.pressed || gamepad.buttons[1]?.pressed);
-        const padUtility = Boolean(gamepad.buttons[2]?.pressed || gamepad.buttons[3]?.pressed);
+        const padAttack = Boolean(gamepad.buttons[7]?.pressed);
+        const padBlock = Boolean(gamepad.buttons[6]?.pressed);
+        const padPrimary = Boolean(gamepad.buttons[0]?.pressed);
+        const padSecondary = Boolean(gamepad.buttons[1]?.pressed);
+        const padFeint = Boolean(gamepad.buttons[2]?.pressed);
+        const padUtility = Boolean(gamepad.buttons[3]?.pressed);
         const padDash = Boolean(gamepad.buttons[4]?.pressed || gamepad.buttons[5]?.pressed);
         if (padPrimary && !input.gamepadPrimaryHeld) playSound("cinder");
         if (padSecondary && !input.gamepadSecondaryHeld) playSound("tide");
         if (padUtility && !input.gamepadUtilityHeld) playSound("volt");
+        if (padAttack && !input.gamepadAttackHeld) playSound("swing");
+        if (padBlock && !input.gamepadBlockHeld) playSound("block");
         if (padDash && !input.gamepadDashHeld) {
           input.dashQueued = true;
           playSound("dash");
@@ -816,16 +901,31 @@ export default function ArenaGame() {
         input.gamepadPrimaryHeld = padPrimary;
         input.gamepadSecondaryHeld = padSecondary;
         input.gamepadUtilityHeld = padUtility;
+        input.gamepadAttackHeld = padAttack;
+        input.gamepadBlockHeld = padBlock;
+        if (padFeint && !input.gamepadFeintHeld) feint = true;
+        input.gamepadFeintHeld = padFeint;
         input.gamepadDashHeld = padDash;
         primary ||= padPrimary;
         secondary ||= padSecondary;
         utility ||= padUtility;
+        attackHeld ||= padAttack;
+        blockHeld ||= padBlock;
       }
 
       const moveLength = Math.hypot(moveX, moveY);
       if (moveLength > 1) {
         moveX /= moveLength;
         moveY /= moveLength;
+      }
+      const basis = rendererRef.current?.getControlBasis();
+      if (basis) {
+        input.aimX = basis.aim.x;
+        input.aimY = basis.aim.y;
+        const strafe = moveX;
+        const forward = -moveY;
+        moveX = basis.right.x * strafe + basis.forward.x * forward;
+        moveY = basis.right.y * strafe + basis.forward.y * forward;
       }
       sequence = (sequence + 1) % 1_000_000_000;
       const packet = {
@@ -839,8 +939,13 @@ export default function ArenaGame() {
         primary: Boolean(primary),
         secondary: Boolean(secondary),
         utility: Boolean(utility),
+        attackHeld: Boolean(attackHeld),
+        blockHeld: Boolean(blockHeld),
+        feint: Boolean(feint),
+        combatDirection: input.combatDirection,
       };
       input.dashQueued = false;
+      input.feintQueued = false;
       const socket = socketRef.current;
       if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(packet));
@@ -857,6 +962,7 @@ export default function ArenaGame() {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("contextmenu", onContextMenu);
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
       onBlur();
     };
   }, [entered, playSound]);
@@ -887,6 +993,7 @@ export default function ArenaGame() {
   };
 
   const leaveArena = () => {
+    if (document.pointerLockElement === canvasRef.current) document.exitPointerLock();
     setEntered(false);
     setConnection("idle");
     setPlayers([]);
@@ -897,6 +1004,8 @@ export default function ArenaGame() {
     visualProjectilesRef.current.clear();
     aliveRef.current.clear();
     seenEffectsRef.current.clear();
+    setPointerLocked(false);
+    pointerLockFallbackRef.current = false;
   };
 
   const copyInvite = async () => {
@@ -919,13 +1028,31 @@ export default function ArenaGame() {
     }
   };
 
+  const toggleCamera = () => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const next = renderer.getCameraMode() === "third-person"
+      ? "first-person"
+      : "third-person";
+    renderer.setCameraMode(next);
+    setCameraMode(next);
+  };
+
+  const capturePointer = () => {
+    canvasRef.current?.focus({ preventScroll: true });
+    void canvasRef.current?.requestPointerLock().catch(() => {
+      pointerLockFallbackRef.current = true;
+      setPointerLocked(true);
+    });
+  };
+
   return (
     <div className={`arena-app ${entered ? "is-playing" : "is-lobby"}`} data-product="arcane-arena">
       <a className="skip-link" href="#arena-main">Skip to arena controls</a>
       <canvas
         ref={canvasRef}
         className="arena-canvas"
-        aria-label="Arcane Arena multiplayer spell duel"
+        aria-label="Arcane Arena 3D multiplayer battlemage duel"
         role="img"
         tabIndex={entered ? 0 : -1}
       />
@@ -950,11 +1077,11 @@ export default function ArenaGame() {
         {!entered ? (
           <section className="lobby-shell" aria-labelledby="arena-title">
             <div className="lobby-copy">
-              <p className="eyebrow"><span>Multiplayer spell duels</span><i /></p>
+              <p className="eyebrow"><span>3D multiplayer battlemage duels</span><i /></p>
               <h1 id="arena-title"><span>Enter the</span> Arcane Arena</h1>
               <p className="lobby-lede">
-                Read the room. Chain your movement. Turn three elemental arcana
-                into one perfect opening.
+                Read the guard. Feint the counter. Break the line with steel,
+                movement, and three elemental arcana.
               </p>
               <div className="lobby-spells" aria-label="Your arcana">
                 <span><i className="spell-dot cinder" />Cinder</span>
@@ -1001,7 +1128,7 @@ export default function ArenaGame() {
 
               <div className="join-meta">
                 <span><i className="meta-key">WASD</i> Move</span>
-                <span><i className="meta-key">Mouse</i> Aim + cast</span>
+                <span><i className="meta-key">Mouse</i> Look + blade</span>
                 <span><i className="meta-key">Pad</i> Supported</span>
               </div>
             </form>
@@ -1037,20 +1164,36 @@ export default function ArenaGame() {
               <button type="button" onClick={toggleSound} aria-pressed={soundEnabled}>
                 {soundEnabled ? "Sound on" : "Sound off"}
               </button>
+              <button type="button" onClick={toggleCamera} aria-label="Toggle first and third person camera">
+                {cameraMode === "third-person" ? "Third person" : "First person"}
+              </button>
               <button type="button" onClick={copyInvite}>Invite</button>
               <button type="button" onClick={leaveArena}>Leave</button>
             </div>
+
+            <div className={`combat-reticle direction-${localPlayer?.combatDirection ?? "up"}`} aria-hidden="true">
+              <i /><span />
+            </div>
+
+            {!pointerLocked ? (
+              <button className="capture-pointer" type="button" onClick={capturePointer}>
+                <strong>Take control</strong>
+                <span>Click to capture the mouse · Esc releases it</span>
+              </button>
+            ) : null}
 
             <details className="help-panel glass-panel">
               <summary><span>How to duel</span><i>?</i></summary>
               <div className="help-body">
                 <p><kbd>WASD</kbd><span>Move</span></p>
-                <p><kbd>Mouse</kbd><span>Aim</span></p>
-                <p><kbd>LMB</kbd><span>Cinder Shot</span></p>
-                <p><kbd>RMB</kbd><span>Tide Ring</span></p>
-                <p><kbd>E</kbd><span>Volt Lance</span></p>
+                <p><kbd>Mouse</kbd><span>Look + choose angle</span></p>
+                <p><kbd>LMB</kbd><span>Draw / release blade</span></p>
+                <p><kbd>RMB</kbd><span>Directional guard</span></p>
+                <p><kbd>Q</kbd><span>Feint</span></p>
+                <p><kbd>1 / 2 / 3</kbd><span>Cinder / Tide / Volt</span></p>
                 <p><kbd>Space</kbd><span>Phase Dash</span></p>
-                <small>Gamepad: left stick moves, right stick aims, triggers cast, shoulders dash.</small>
+                <p><kbd>V</kbd><span>Toggle camera</span></p>
+                <small>Gamepad: sticks move/look, triggers attack/guard, face buttons cast or feint.</small>
               </div>
             </details>
 
@@ -1060,6 +1203,12 @@ export default function ArenaGame() {
                   Reforming in {Math.max(0, (Number(localPlayer.respawnAt) - serverNow) / 1000).toFixed(1)}
                 </div>
               ) : null}
+              <div className={`blade-state phase-${localPlayer?.combatPhase ?? "idle"}`}>
+                <span><i /> Arcane blade</span>
+                <strong>{(localPlayer?.combatPhase ?? "idle").replace("ing", "")}</strong>
+                <small>{localPlayer?.combatDirection ?? "up"}</small>
+                <b style={{ width: `${Math.round((localPlayer?.charge ?? 0) * 100)}%` }} />
+              </div>
               <div className="health-cluster">
                 <div className="health-copy"><span>Vital weave</span><strong>{Math.ceil(health)}<small> / {maxHealth}</small></strong></div>
                 <div

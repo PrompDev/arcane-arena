@@ -11,12 +11,24 @@
 
 ## Current shape
 
-- Vinext/React frontend with a direct WGSL WebGPU renderer and Canvas 2D
-  fallback.
+- Vinext/React frontend with a Babylon.js 3D renderer: WebGPU by default and
+  WebGL 2 fallback.
+- Third-person follow camera is the default; V and the HUD toggle an optional
+  first-person view. Server x/y remains the authoritative ground plane and maps
+  to client x/z.
+- CC0 KayKit Adventurers and Dungeon Remastered assets provide the animated
+  mage, sword, floor, low rails, collision pillars, and torches. Exact notices
+  and licence copies are tracked in `THIRD_PARTY_NOTICES.md` and
+  `public/assets/licenses/`.
 - Separate Cloudflare Worker plus one SQLite Durable Object per room.
-- Server-authoritative 30 Hz movement, collisions, spell interactions, health,
-  KOs, scores, and respawns.
-- Public room server deployed and verified with two live WebSocket clients.
+- Server-authoritative 30 Hz movement, collisions, held draw/release attacks,
+  four combat directions, charge damage, directional guards, feints, hit/block
+  stuns, spell interactions, health, KOs, scores, and respawns.
+- The melee behavior adapts timing/state ideas from the MIT AMS project while
+  retaining server-owned hit validation; no Roblox binaries/assets/IDs were
+  copied.
+- Public room server deployment `71326836-ff07-431e-874a-59ac3979928d` passed a
+  two-live-WebSocket attack/block smoke test after the melee update.
 - Public frontend deployed at
   `https://arcane-arena-duels.tomdavie016.chatgpt.site`.
 - Public source repository: `https://github.com/PrompDev/arcane-arena`.
@@ -25,7 +37,9 @@
 
 ## Next actions
 
-1. Add identity-preserving reconnection and tune client prediction from live
-   latency playtests.
-2. Resolve same-tick spell trades fairly before expanding modes,
+1. Add local input prediction/reconciliation; the close third-person camera
+   makes 30 Hz authoritative stepping more visible than the former overhead
+   renderer.
+2. Add camera obstruction handling and a dedicated first-person weapon pose.
+3. Resolve same-tick spell trades fairly before expanding modes,
    matchmaking, progression, or art production.

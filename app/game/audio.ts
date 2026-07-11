@@ -3,6 +3,8 @@ export type ArenaSound =
   | "cinder"
   | "tide"
   | "volt"
+  | "swing"
+  | "block"
   | "hit"
   | "defeat"
   | "respawn";
@@ -54,6 +56,15 @@ export class ArenaAudio {
         this.tone(now, 1260, 260, 0.16, "square", 0.11);
         this.tone(now + 0.035, 1840, 420, 0.11, "sawtooth", 0.08);
         this.noiseSweep(now, 0.14, 3200, 1300, 0.14);
+        break;
+      case "swing":
+        this.noiseSweep(now, 0.17, 1900, 210, 0.16);
+        this.tone(now + 0.035, 360, 105, 0.13, "triangle", 0.07);
+        break;
+      case "block":
+        this.tone(now, 165, 78, 0.2, "square", 0.11);
+        this.tone(now + 0.018, 960, 270, 0.13, "triangle", 0.07);
+        this.noiseSweep(now, 0.09, 2500, 480, 0.08);
         break;
       case "hit":
         this.tone(now, 120, 52, 0.11, "square", 0.11);

@@ -1,9 +1,9 @@
 # Arcane Arena
 
-Arcane Arena is an original, clean-room browser arena prototype: fast movement,
-elemental spell combinations, private room links, and server-authoritative
-combat for up to four players. The client renders with WebGPU and falls back to
-Canvas 2D when WebGPU is unavailable.
+Arcane Arena is an original, clean-room 3D browser arena: directional swordplay,
+fast movement, elemental spell combinations, private room links, and
+server-authoritative combat for up to four players. The client uses Babylon.js
+with WebGPU by default and a WebGL 2 fallback.
 
 No code, art, audio, or other assets from *Wizard of Legend* are included.
 
@@ -17,7 +17,7 @@ four computers or browser sessions.
 ## Requirements
 
 - Node.js 22.13 or newer
-- A current browser with WebGPU support for the full renderer
+- A current browser with WebGPU or WebGL 2 support
 - A Cloudflare account only when deploying the multiplayer Worker
 
 ## Run locally
@@ -49,11 +49,19 @@ to join the same room.
 | Action | Keyboard and mouse | Gamepad |
 | --- | --- | --- |
 | Move | WASD or arrow keys | Left stick |
-| Aim | Mouse | Right stick |
-| Cinder Shot | Left mouse button | Right trigger or south button |
-| Tide Ring | Right mouse button | Left trigger or east button |
-| Volt Lance | E | West or north button |
+| Look / choose combat direction | Mouse | Right stick |
+| Draw and release sword attack | Left mouse button | Right trigger |
+| Directional guard | Right mouse button | Left trigger |
+| Feint | Q | West button |
+| Cinder Shot | 1 | South button |
+| Tide Ring | 2 | East button |
+| Volt Lance | 3 | North button |
 | Phase Dash | Space or Shift | Either shoulder button |
+| Toggle third / first person | V or the HUD camera button | HUD camera button |
+
+Holding an attack charges it from 20 to 40 damage over two seconds. Releasing
+commits the swing after a 350 ms minimum draw. Matching a guard direction blocks
+the hit and stuns the attacker; Q cancels an early draw or release as a feint.
 
 Tide Ring applies `soaked`; hitting a soaked rival with Volt Lance consumes the
 status for bonus damage and a short stun.
@@ -61,7 +69,10 @@ status for bonus damage and a short stun.
 ## Architecture
 
 - `app/` contains the Vinext/React client and accessible arena interface.
-- `app/game/renderer.ts` owns the native WebGPU renderer and Canvas 2D fallback.
+- `app/game/renderer.ts` lazily loads the Babylon.js renderer so server rendering
+  does not evaluate browser graphics APIs.
+- `app/game/babylon/` owns the WebGPU/WebGL engine, third/first-person camera,
+  animated fighter instances, licensed dungeon kit, and 3D spell effects.
 - `app/game/ArenaGame.tsx` handles input, room links, WebSocket state, smoothing,
   gamepad support, and the HUD.
 - `arena-server/` is a separate Cloudflare Worker. One SQLite Durable Object owns
@@ -70,9 +81,15 @@ status for bonus damage and a short stun.
 - `.openai/hosting.json` configures only the frontend site. It does not bind the
   Durable Object server.
 
-The server is the source of truth for movement, collision, cooldowns, damage,
-status effects, scores, and respawns. Clients send bounded input snapshots and
-render the snapshots returned by the room.
+The server is the source of truth for movement, collision, attack phases,
+charge, directional guards, feints, stuns, spells, cooldowns, damage, scores,
+and respawns. Clients send bounded input snapshots and render the snapshots
+returned by the room.
+
+The animated mage, sword, dungeon floor, barriers, pillars, and torches are
+from CC0 KayKit packs. The melee design adapts timing and state ideas from the
+MIT-licensed Advanced Melee System while keeping collision authoritative on the
+server. See `THIRD_PARTY_NOTICES.md` for exact sources and licence copies.
 
 ## Verify
 

@@ -256,7 +256,8 @@ canvas:focus-visible {
 }
 
 .status-online i,
-.gpu-webgpu i {
+.gpu-webgpu i,
+.gpu-webgl2 i {
   background: var(--cyan);
   box-shadow: 0 0 8px rgba(112, 237, 255, 0.8), 0 0 0 3px rgba(112, 237, 255, 0.1);
 }
@@ -273,9 +274,7 @@ canvas:focus-visible {
   background: var(--danger);
 }
 
-.gpu-canvas2d i {
-  background: var(--magenta);
-}
+.gpu-webgl2 i { background: #9b8cff; }
 
 #arena-main {
   position: absolute;
@@ -816,6 +815,81 @@ kbd {
   color: white;
 }
 
+.combat-reticle {
+  position: absolute;
+  z-index: 13;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .8));
+}
+
+.combat-reticle::before,
+.combat-reticle::after,
+.combat-reticle i,
+.combat-reticle span {
+  content: "";
+  position: absolute;
+  background: rgba(235, 250, 255, .88);
+  box-shadow: 0 0 7px rgba(112, 237, 255, .48);
+}
+
+.combat-reticle::before,
+.combat-reticle::after {
+  top: 17px;
+  width: 8px;
+  height: 1px;
+}
+
+.combat-reticle::before { left: 2px; }
+.combat-reticle::after { right: 2px; }
+.combat-reticle i,
+.combat-reticle span { left: 17px; width: 1px; height: 8px; }
+.combat-reticle i { top: 2px; }
+.combat-reticle span { bottom: 2px; }
+
+.direction-up i,
+.direction-down span,
+.direction-left::before,
+.direction-right::after {
+  background: var(--cyan);
+  box-shadow: 0 0 11px var(--cyan);
+}
+
+.capture-pointer {
+  position: absolute;
+  z-index: 19;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  gap: 5px;
+  min-width: 250px;
+  padding: 13px 18px;
+  border: 1px solid rgba(112, 237, 255, .36);
+  background: rgba(5, 9, 16, .88);
+  color: white;
+  cursor: pointer;
+  transform: translate(-50%, calc(-50% + 68px));
+  box-shadow: 0 14px 42px rgba(0, 0, 0, .48), inset 0 0 20px rgba(112, 237, 255, .04);
+  backdrop-filter: blur(13px);
+}
+
+.capture-pointer strong {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.capture-pointer span {
+  color: #71838f;
+  font-family: var(--font-mono);
+  font-size: 7px;
+}
+
 .help-panel {
   position: absolute;
   top: 135px;
@@ -884,6 +958,56 @@ kbd {
   width: min(880px, calc(100vw - 36px));
   transform: translateX(-50%);
 }
+
+.blade-state {
+  position: relative;
+  width: min(360px, 55vw);
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 6px;
+  padding: 7px 11px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(159, 140, 255, .22);
+  background: rgba(5, 9, 16, .82);
+  color: #8191a0;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  backdrop-filter: blur(12px);
+}
+
+.blade-state span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.blade-state span i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9f8cff;
+  box-shadow: 0 0 9px #9f8cff;
+}
+
+.blade-state strong { color: #dce5eb; font-size: 8px; }
+.blade-state small { min-width: 34px; color: var(--cyan); font-size: 7px; text-align: right; }
+.blade-state b {
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  background: linear-gradient(90deg, #9f8cff, var(--cyan));
+  box-shadow: 0 0 10px rgba(112, 237, 255, .7);
+  transition: width 80ms linear;
+}
+
+.phase-blocking { border-color: rgba(112, 237, 255, .42); }
+.phase-stunned { border-color: rgba(255, 88, 125, .48); }
+.phase-releasing { border-color: rgba(241, 201, 107, .48); }
 
 .health-cluster {
   width: min(390px, 55vw);
@@ -1309,7 +1433,7 @@ kbd {
   .score-list li { grid-template-columns: 17px 8px minmax(0,1fr) auto; gap: 6px; }
   .player-name { font-size: 9px; }
   .player-name small { display: none; }
-  .match-tools button:nth-child(2) { display: none; }
+  .match-tools button:nth-child(3) { display: none; }
   .help-panel { width: 112px; }
   .help-panel summary { padding-inline: 9px; font-size: 7px; }
   .help-panel summary i { width: 18px; height: 18px; }

@@ -1,5 +1,7 @@
 import {
   type ArenaDescription,
+  type CombatDirection,
+  type CombatPhase,
   type EffectSnapshot,
   type EffectType,
   type InputMessage,
@@ -43,7 +45,24 @@ const VOLT_SOAKED_BONUS = 18;
 const VOLT_STUN_MS = 650;
 const MAX_CATCH_UP_STEPS = 3;
 const MAX_CATCH_UP_MS = TICK_INTERVAL_MS * MAX_CATCH_UP_STEPS;
-const PERSISTENCE_VERSION = 1;
+const PERSISTENCE_VERSION = 2;
+
+export const MELEE_MIN_DRAW_MS = 350;
+export const MELEE_MAX_CHARGE_MS = 2_000;
+export const MELEE_FEINT_WINDOW_MS = 350;
+export const MELEE_FEINT_COOLDOWN_MS = 500;
+export const MELEE_RELEASE_HIT_AT_MS = 350;
+export const MELEE_RELEASE_DURATION_MS = 700;
+export const MELEE_BLOCK_STUN_MS = 650;
+export const MELEE_HIT_STUN_MS = 300;
+export const MELEE_MIN_DAMAGE = 20;
+export const MELEE_MAX_DAMAGE = 40;
+
+const MELEE_RANGE = 2.05;
+const MELEE_SLICE_HALF_ARC_COSINE = Math.cos((70 * Math.PI) / 180);
+const MELEE_OVERHEAD_HALF_ARC_COSINE = Math.cos((42 * Math.PI) / 180);
+const MELEE_STAB_HALF_ARC_COSINE = Math.cos((28 * Math.PI) / 180);
+const BLOCK_FACING_HALF_ARC_COSINE = Math.cos((65 * Math.PI) / 180);
 
 export const ARENA_DESCRIPTION: ArenaDescription = {
   width: ARENA_WIDTH,
@@ -73,12 +92,21 @@ interface PlayerInputState {
   primaryQueued: boolean;
   secondaryQueued: boolean;
   utilityQueued: boolean;
+  attackHeld: boolean;
+  attackPressedQueued: boolean;
+  attackReleasedQueued: boolean;
+  blockHeld: boolean;
+  feintQueued: boolean;
+  combatDirection: CombatDirection;
 }
 
 export interface PlayerState extends PlayerSnapshot {
   input: PlayerInputState;
   lastInputAt: number | null;
   lastSeq: number;
+  meleeReleaseRequested: boolean;
+  meleeHitResolved: boolean;
+  feintCooldownUntil: number;
 }
 
 export interface ProjectileState extends ProjectileSnapshot {}
@@ -132,6 +160,30 @@ function safeTime(value: unknown): number {
   return boundedNumber(value, 0, 0, Number.MAX_SAFE_INTEGER);
 }
 
+function restoredCombatDirection(value: unknown): CombatDirection {
+  switch (value) {
+    case "up":
+    case "down":
+    case "left":
+    case "right":
+      return value;
+    default:
+      return "up";
+  }
+}
+
+function restoredCombatPhase(value: unknown): CombatPhase {
+  switch (value) {
+    case "drawing":
+    case "releasing":
+    case "blocking":
+    case "stunned":
+      return value;
+    default:
+      return "idle";
+  }
+}
+
 function emptyInput(): PlayerInputState {
   return {
     moveX: 0,
@@ -140,7 +192,45 @@ function emptyInput(): PlayerInputState {
     primaryQueued: false,
     secondaryQueued: false,
     utilityQueued: false,
+    attackHeld: false,
+    attackPressedQueued: false,
+    attackReleasedQueued: false,
+    blockHeld: false,
+    feintQueued: false,
+    combatDirection: "up",
   };
+}
+
+function setCombatIdle(player: PlayerState): void {
+  player.combatPhase = "idle";
+  player.combatStartedAt = 0;
+  player.charge = 0;
+  player.meleeReleaseRequested = false;
+  player.meleeHitResolved = false;
+}
+
+export function resetPlayerInput(
+  player: PlayerState,
+  cancelCombat = false,
+  now = 0,
+): void {
+  player.input = emptyInput();
+  player.lastInputAt = null;
+
+  if (!cancelCombat) {
+    return;
+  }
+
+  if (player.stunnedUntil > now) {
+    player.combatPhase = "stunned";
+    player.combatStartedAt = now;
+    player.charge = 0;
+    player.meleeReleaseRequested = false;
+    player.meleeHitResolved = true;
+    return;
+  }
+
+  setCombatIdle(player);
 }
 
 function chooseSpawn(state: ArenaState, excludedPlayerId?: string): { x: number; y: number } {
@@ -209,6 +299,11 @@ export function addPlayer(
     soakedUntil: 0,
     stunnedUntil: 0,
     dashUntil: 0,
+    combatPhase: "idle",
+    combatDirection: "up",
+    combatStartedAt: 0,
+    charge: 0,
+    weapon: "arcane-blade",
     cooldowns: {
       dash: now,
       primary: now,
@@ -218,6 +313,9 @@ export function addPlayer(
     input: emptyInput(),
     lastInputAt: null,
     lastSeq: -1,
+    meleeReleaseRequested: false,
+    meleeHitResolved: false,
+    feintCooldownUntil: now,
   };
 
   state.players.set(id, player);
@@ -249,6 +347,18 @@ export function applyPlayerInput(
   player.input.moveX = input.moveX;
   player.input.moveY = input.moveY;
 
+  const attackWasHeld = player.input.attackHeld;
+  player.input.attackHeld = input.attackHeld;
+  player.input.attackPressedQueued ||= input.attackHeld && !attackWasHeld;
+  player.input.attackReleasedQueued ||= !input.attackHeld && attackWasHeld;
+  player.input.blockHeld = input.blockHeld;
+  player.input.feintQueued ||= input.feint;
+  player.input.combatDirection = input.combatDirection;
+
+  if (player.combatPhase !== "releasing" && player.combatPhase !== "stunned") {
+    player.combatDirection = input.combatDirection;
+  }
+
   if (Math.hypot(input.aimX, input.aimY) > 0.01) {
     player.aimX = input.aimX;
     player.aimY = input.aimY;
@@ -269,8 +379,7 @@ export function expirePlayerInputIfStale(player: PlayerState, now: number): bool
     return false;
   }
 
-  player.input = emptyInput();
-  player.lastInputAt = null;
+  resetPlayerInput(player, true, now);
   return true;
 }
 
@@ -477,7 +586,8 @@ function applyDamage(
   target.dashUntil = 0;
   target.soakedUntil = 0;
   target.stunnedUntil = 0;
-  target.input = emptyInput();
+  resetPlayerInput(target);
+  setCombatIdle(target);
 
   const attacker = state.players.get(attackerId);
   if (attacker !== undefined && attacker.id !== target.id) {
@@ -485,6 +595,242 @@ function applyDamage(
   }
 
   addEffect(state, "death", target.id, target.x, target.y, now, 620, target.radius * 2.8);
+}
+
+function stunPlayer(player: PlayerState, now: number, durationMs: number): void {
+  if (!player.alive) {
+    return;
+  }
+
+  player.stunnedUntil = Math.max(player.stunnedUntil, now + durationMs);
+  player.combatPhase = "stunned";
+  player.combatStartedAt = now;
+  player.charge = 0;
+  player.meleeReleaseRequested = false;
+  player.meleeHitResolved = true;
+  player.input.attackPressedQueued = false;
+  player.input.attackReleasedQueued = false;
+  player.input.feintQueued = false;
+}
+
+function drawCharge(startedAt: number, now: number): number {
+  const chargeWindow = MELEE_MAX_CHARGE_MS - MELEE_MIN_DRAW_MS;
+  return clamp((now - startedAt - MELEE_MIN_DRAW_MS) / chargeWindow, 0, 1);
+}
+
+function beginMeleeDraw(player: PlayerState, now: number): void {
+  player.combatPhase = "drawing";
+  player.combatStartedAt = now;
+  player.combatDirection = player.input.combatDirection;
+  player.charge = 0;
+  player.meleeReleaseRequested = false;
+  player.meleeHitResolved = false;
+}
+
+function beginMeleeRelease(player: PlayerState, now: number): void {
+  player.combatPhase = "releasing";
+  player.combatStartedAt = now;
+  player.meleeReleaseRequested = false;
+  player.meleeHitResolved = false;
+}
+
+function canFeint(player: PlayerState, now: number): boolean {
+  if (now < player.feintCooldownUntil) {
+    return false;
+  }
+  if (player.combatPhase === "drawing") {
+    return true;
+  }
+  return (
+    player.combatPhase === "releasing" &&
+    now - player.combatStartedAt < MELEE_FEINT_WINDOW_MS &&
+    !player.meleeHitResolved
+  );
+}
+
+function consumeCombatEdges(player: PlayerState): void {
+  player.input.attackPressedQueued = false;
+  player.input.attackReleasedQueued = false;
+  player.input.feintQueued = false;
+}
+
+function advanceMeleeState(player: PlayerState, now: number): void {
+  if (now < player.stunnedUntil) {
+    if (player.combatPhase !== "stunned") {
+      player.combatPhase = "stunned";
+      player.combatStartedAt = now;
+      player.charge = 0;
+    }
+    consumeCombatEdges(player);
+    return;
+  }
+
+  if (player.combatPhase === "stunned") {
+    player.stunnedUntil = 0;
+    setCombatIdle(player);
+  }
+
+  if (player.input.feintQueued && canFeint(player, now)) {
+    setCombatIdle(player);
+    player.feintCooldownUntil = now + MELEE_FEINT_COOLDOWN_MS;
+    consumeCombatEdges(player);
+    return;
+  }
+
+  if (player.combatPhase !== "releasing") {
+    player.combatDirection = player.input.combatDirection;
+  }
+
+  if (player.combatPhase === "idle") {
+    if (player.input.attackPressedQueued && !player.input.blockHeld) {
+      beginMeleeDraw(player, now);
+      if (player.input.attackReleasedQueued) {
+        player.meleeReleaseRequested = true;
+      }
+    } else if (player.input.blockHeld) {
+      player.combatPhase = "blocking";
+      player.combatStartedAt = now;
+      player.charge = 0;
+    }
+  } else if (player.combatPhase === "blocking") {
+    if (!player.input.blockHeld) {
+      setCombatIdle(player);
+      if (player.input.attackPressedQueued) {
+        beginMeleeDraw(player, now);
+        if (player.input.attackReleasedQueued) {
+          player.meleeReleaseRequested = true;
+        }
+      }
+    }
+  } else if (player.combatPhase === "drawing") {
+    if (player.input.attackReleasedQueued) {
+      player.meleeReleaseRequested = true;
+    }
+    player.charge = drawCharge(player.combatStartedAt, now);
+
+    if (
+      player.meleeReleaseRequested &&
+      now - player.combatStartedAt >= MELEE_MIN_DRAW_MS
+    ) {
+      beginMeleeRelease(player, now);
+    }
+  } else if (
+    player.combatPhase === "releasing" &&
+    player.meleeHitResolved &&
+    now - player.combatStartedAt >= MELEE_RELEASE_DURATION_MS
+  ) {
+    setCombatIdle(player);
+  }
+
+  consumeCombatEdges(player);
+}
+
+function meleeArcCosine(direction: CombatDirection): number {
+  switch (direction) {
+    case "up":
+      return MELEE_OVERHEAD_HALF_ARC_COSINE;
+    case "down":
+      return MELEE_STAB_HALF_ARC_COSINE;
+    case "left":
+    case "right":
+      return MELEE_SLICE_HALF_ARC_COSINE;
+  }
+}
+
+function expectedBlockDirection(direction: CombatDirection): CombatDirection {
+  switch (direction) {
+    case "left":
+      return "right";
+    case "right":
+      return "left";
+    case "up":
+    case "down":
+      return direction;
+  }
+}
+
+function blocksMeleeStrike(
+  defender: PlayerState,
+  attacker: PlayerState,
+  attackDirection: CombatDirection,
+): boolean {
+  if (defender.combatPhase !== "blocking") {
+    return false;
+  }
+
+  const towardAttacker = normalizedDirection(
+    attacker.x - defender.x,
+    attacker.y - defender.y,
+  );
+  const facing = normalizedDirection(defender.aimX, defender.aimY);
+  const facesAttacker =
+    facing.x * towardAttacker.x + facing.y * towardAttacker.y >=
+    BLOCK_FACING_HALF_ARC_COSINE;
+
+  return (
+    facesAttacker &&
+    defender.combatDirection === expectedBlockDirection(attackDirection)
+  );
+}
+
+function nearestMeleeTarget(state: ArenaState, attacker: PlayerState): PlayerState | null {
+  const forward = normalizedDirection(attacker.aimX, attacker.aimY);
+  const minimumForwardDot = meleeArcCosine(attacker.combatDirection);
+  let nearest: PlayerState | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const target of state.players.values()) {
+    if (!target.alive || target.id === attacker.id) {
+      continue;
+    }
+
+    const offsetX = target.x - attacker.x;
+    const offsetY = target.y - attacker.y;
+    const distance = Math.hypot(offsetX, offsetY);
+    if (distance > MELEE_RANGE + target.radius || distance >= nearestDistance) {
+      continue;
+    }
+
+    const direction = normalizedDirection(offsetX, offsetY);
+    const forwardDot = forward.x * direction.x + forward.y * direction.y;
+    if (forwardDot < minimumForwardDot) {
+      continue;
+    }
+
+    nearest = target;
+    nearestDistance = distance;
+  }
+
+  return nearest;
+}
+
+function resolveMeleeStrike(state: ArenaState, attacker: PlayerState, now: number): void {
+  if (
+    attacker.combatPhase !== "releasing" ||
+    attacker.meleeHitResolved ||
+    now - attacker.combatStartedAt < MELEE_RELEASE_HIT_AT_MS
+  ) {
+    return;
+  }
+
+  attacker.meleeHitResolved = true;
+  const target = nearestMeleeTarget(state, attacker);
+  if (target === null) {
+    return;
+  }
+
+  if (blocksMeleeStrike(target, attacker, attacker.combatDirection)) {
+    stunPlayer(attacker, now, MELEE_BLOCK_STUN_MS);
+    return;
+  }
+
+  const damage = Math.round(
+    MELEE_MIN_DAMAGE + (MELEE_MAX_DAMAGE - MELEE_MIN_DAMAGE) * attacker.charge,
+  );
+  applyDamage(state, target, attacker.id, damage, now);
+  if (target.alive) {
+    stunPlayer(target, now, MELEE_HIT_STUN_MS);
+  }
 }
 
 function castTideRing(state: ArenaState, player: PlayerState, now: number): void {
@@ -610,7 +956,7 @@ function castVoltLance(state: ArenaState, player: PlayerState, now: number): voi
   const wasSoaked = hitTarget.soakedUntil > now;
   if (wasSoaked) {
     hitTarget.soakedUntil = 0;
-    hitTarget.stunnedUntil = Math.max(hitTarget.stunnedUntil, now + VOLT_STUN_MS);
+    stunPlayer(hitTarget, now, VOLT_STUN_MS);
   }
 
   applyDamage(
@@ -732,13 +1078,16 @@ function respawnPlayer(state: ArenaState, player: PlayerState, now: number): voi
   player.soakedUntil = 0;
   player.stunnedUntil = 0;
   player.dashUntil = 0;
+  player.combatDirection = "up";
+  player.feintCooldownUntil = now;
   player.cooldowns = {
     dash: now,
     primary: now,
     secondary: now,
     utility: now,
   };
-  player.input = emptyInput();
+  resetPlayerInput(player);
+  setCombatIdle(player);
   addEffect(state, "spawn", player.id, player.x, player.y, now, 520, player.radius * 3);
 }
 
@@ -792,6 +1141,25 @@ export function stepArena(
       if (player.stunnedUntil <= substepNow) {
         player.stunnedUntil = 0;
       }
+    }
+
+    if (processQueuedActions) {
+      const combatants = [...state.players.values()]
+        .filter((player) => player.alive)
+        .sort((first, second) => first.id.localeCompare(second.id));
+
+      for (const player of combatants) {
+        advanceMeleeState(player, substepNow);
+      }
+      for (const player of combatants) {
+        resolveMeleeStrike(state, player, substepNow);
+      }
+    }
+
+    for (const player of state.players.values()) {
+      if (!player.alive) {
+        continue;
+      }
 
       if (processQueuedActions) {
         beginDash(state, player, substepNow);
@@ -836,6 +1204,11 @@ function playerSnapshot(player: PlayerState): PlayerSnapshot {
     soakedUntil: player.soakedUntil,
     stunnedUntil: player.stunnedUntil,
     dashUntil: player.dashUntil,
+    combatPhase: player.combatPhase,
+    combatDirection: player.combatDirection,
+    combatStartedAt: player.combatStartedAt,
+    charge: player.charge,
+    weapon: player.weapon,
     cooldowns: { ...player.cooldowns },
   };
 }
@@ -880,6 +1253,7 @@ function restorePlayer(value: unknown): PlayerState | null {
   const cooldowns = isRecord(value.cooldowns) ? value.cooldowns : {};
   const aim = normalizedDirection(finite(value.aimX, 1), finite(value.aimY), 1, 0);
   const maxHealth = boundedNumber(value.maxHealth, MAX_HEALTH, 1, MAX_HEALTH);
+  const combatPhase = restoredCombatPhase(value.combatPhase);
   return {
     id: value.id.slice(0, 64),
     name: sanitizeName(typeof value.name === "string" ? value.name : null),
@@ -899,6 +1273,14 @@ function restorePlayer(value: unknown): PlayerState | null {
     soakedUntil: safeTime(value.soakedUntil),
     stunnedUntil: safeTime(value.stunnedUntil),
     dashUntil: safeTime(value.dashUntil),
+    combatPhase,
+    combatDirection: restoredCombatDirection(value.combatDirection),
+    combatStartedAt: safeTime(value.combatStartedAt),
+    charge:
+      combatPhase === "drawing" || combatPhase === "releasing"
+        ? boundedNumber(value.charge, 0, 0, 1)
+        : 0,
+    weapon: "arcane-blade",
     cooldowns: {
       dash: safeTime(cooldowns.dash),
       primary: safeTime(cooldowns.primary),
@@ -908,6 +1290,9 @@ function restorePlayer(value: unknown): PlayerState | null {
     input: emptyInput(),
     lastInputAt: null,
     lastSeq: Math.floor(boundedNumber(value.lastSeq, -1, -1, 2_147_483_647)),
+    meleeReleaseRequested: value.meleeReleaseRequested === true,
+    meleeHitResolved: value.meleeHitResolved === true,
+    feintCooldownUntil: safeTime(value.feintCooldownUntil),
   };
 }
 
@@ -1008,7 +1393,10 @@ export function restoreArenaState(room: string, raw: string, now: number): Arena
     return createArenaState(room);
   }
 
-  if (!isRecord(value) || value.schemaVersion !== PERSISTENCE_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== PERSISTENCE_VERSION)
+  ) {
     return createArenaState(room);
   }
 

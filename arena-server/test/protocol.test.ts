@@ -22,6 +22,10 @@ describe("protocol validation", () => {
         primary: "yes",
         secondary: 1,
         utility: false,
+        attackHeld: true,
+        blockHeld: "yes",
+        feint: 1,
+        combatDirection: "sideways",
       }),
     );
 
@@ -36,6 +40,28 @@ describe("protocol validation", () => {
       primary: false,
       secondary: false,
       utility: false,
+      attackHeld: true,
+      blockHeld: false,
+      feint: false,
+      combatDirection: "up",
+    });
+
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "input",
+          seq: 23,
+          combatDirection: "left",
+          attackHeld: false,
+          blockHeld: true,
+          feint: true,
+        }),
+      ),
+    ).toMatchObject({
+      attackHeld: false,
+      blockHeld: true,
+      feint: true,
+      combatDirection: "left",
     });
   });
 
