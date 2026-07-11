@@ -104,9 +104,18 @@ export interface PlayerState extends PlayerSnapshot {
   input: PlayerInputState;
   lastInputAt: number | null;
   lastSeq: number;
+  meleeAimX: number;
+  meleeAimY: number;
   meleeReleaseRequested: boolean;
   meleeHitResolved: boolean;
   feintCooldownUntil: number;
+}
+
+interface MeleeStrikePlan {
+  attackerId: string;
+  targetId: string | null;
+  blocked: boolean;
+  damage: number;
 }
 
 export interface ProjectileState extends ProjectileSnapshot {}
@@ -313,6 +322,8 @@ export function addPlayer(
     input: emptyInput(),
     lastInputAt: null,
     lastSeq: -1,
+    meleeAimX: 1,
+    meleeAimY: 0,
     meleeReleaseRequested: false,
     meleeHitResolved: false,
     feintCooldownUntil: now,
@@ -578,6 +589,17 @@ function applyDamage(
     return;
   }
 
+  defeatPlayer(state, target, attackerId, now);
+}
+
+function defeatPlayer(
+  state: ArenaState,
+  target: PlayerState,
+  attackerId: string,
+  now: number,
+): void {
+  target.health = 0;
+
   target.alive = false;
   target.deaths += 1;
   target.respawnAt = now + RESPAWN_MS;
@@ -619,9 +641,12 @@ function drawCharge(startedAt: number, now: number): number {
 }
 
 function beginMeleeDraw(player: PlayerState, now: number): void {
+  const lockedAim = normalizedDirection(player.aimX, player.aimY);
   player.combatPhase = "drawing";
   player.combatStartedAt = now;
   player.combatDirection = player.input.combatDirection;
+  player.meleeAimX = lockedAim.x;
+  player.meleeAimY = lockedAim.y;
   player.charge = 0;
   player.meleeReleaseRequested = false;
   player.meleeHitResolved = false;
@@ -774,7 +799,7 @@ function blocksMeleeStrike(
 }
 
 function nearestMeleeTarget(state: ArenaState, attacker: PlayerState): PlayerState | null {
-  const forward = normalizedDirection(attacker.aimX, attacker.aimY);
+  const forward = normalizedDirection(attacker.meleeAimX, attacker.meleeAimY);
   const minimumForwardDot = meleeArcCosine(attacker.combatDirection);
   let nearest: PlayerState | null = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -797,6 +822,22 @@ function nearestMeleeTarget(state: ArenaState, attacker: PlayerState): PlayerSta
       continue;
     }
 
+    const blockedByPillar = ARENA_DESCRIPTION.pillars.some((pillar) => {
+      const hitDistance = rayCircleHitDistance(
+        attacker.x,
+        attacker.y,
+        direction.x,
+        direction.y,
+        pillar.x,
+        pillar.y,
+        pillar.r,
+      );
+      return hitDistance !== null && hitDistance < distance;
+    });
+    if (blockedByPillar) {
+      continue;
+    }
+
     nearest = target;
     nearestDistance = distance;
   }
@@ -804,31 +845,116 @@ function nearestMeleeTarget(state: ArenaState, attacker: PlayerState): PlayerSta
   return nearest;
 }
 
-function resolveMeleeStrike(state: ArenaState, attacker: PlayerState, now: number): void {
+function planMeleeStrike(
+  state: ArenaState,
+  attacker: PlayerState,
+  now: number,
+): MeleeStrikePlan | null {
   if (
     attacker.combatPhase !== "releasing" ||
     attacker.meleeHitResolved ||
     now - attacker.combatStartedAt < MELEE_RELEASE_HIT_AT_MS
   ) {
-    return;
+    return null;
   }
 
-  attacker.meleeHitResolved = true;
   const target = nearestMeleeTarget(state, attacker);
   if (target === null) {
-    return;
-  }
-
-  if (blocksMeleeStrike(target, attacker, attacker.combatDirection)) {
-    stunPlayer(attacker, now, MELEE_BLOCK_STUN_MS);
-    return;
+    return {
+      attackerId: attacker.id,
+      targetId: null,
+      blocked: false,
+      damage: 0,
+    };
   }
 
   const damage = Math.round(
     MELEE_MIN_DAMAGE + (MELEE_MAX_DAMAGE - MELEE_MIN_DAMAGE) * attacker.charge,
   );
-  applyDamage(state, target, attacker.id, damage, now);
-  if (target.alive) {
+
+  return {
+    attackerId: attacker.id,
+    targetId: target.id,
+    blocked: blocksMeleeStrike(target, attacker, attacker.combatDirection),
+    damage,
+  };
+}
+
+function resolveMeleeStrikes(
+  state: ArenaState,
+  combatants: readonly PlayerState[],
+  now: number,
+): void {
+  const plans = combatants
+    .map((attacker) => planMeleeStrike(state, attacker, now))
+    .filter((plan): plan is MeleeStrikePlan => plan !== null);
+
+  // Mark every eligible release only after all targets and blocks have been read
+  // from the same pre-hit state. A strike earlier in UUID order therefore cannot
+  // stun or kill another attacker before that attack has been planned.
+  for (const plan of plans) {
+    const attacker = state.players.get(plan.attackerId);
+    if (attacker !== undefined) {
+      attacker.meleeHitResolved = true;
+    }
+  }
+
+  const damageByTarget = new Map<
+    string,
+    Array<{ attackerId: string; damage: number }>
+  >();
+  const blockedAttackerIds = new Set<string>();
+
+  for (const plan of plans) {
+    if (plan.targetId === null) {
+      continue;
+    }
+    if (plan.blocked) {
+      blockedAttackerIds.add(plan.attackerId);
+      continue;
+    }
+
+    const contributions = damageByTarget.get(plan.targetId) ?? [];
+    contributions.push({ attackerId: plan.attackerId, damage: plan.damage });
+    damageByTarget.set(plan.targetId, contributions);
+  }
+
+  const survivingHitTargets: PlayerState[] = [];
+  for (const targetId of [...damageByTarget.keys()].sort()) {
+    const target = state.players.get(targetId);
+    const contributions = damageByTarget.get(targetId);
+    if (target === undefined || contributions === undefined || !target.alive) {
+      continue;
+    }
+
+    const totalDamage = contributions.reduce(
+      (total, contribution) => total + contribution.damage,
+      0,
+    );
+    target.health = Math.max(0, target.health - totalDamage);
+    if (target.health > 0) {
+      survivingHitTargets.push(target);
+      continue;
+    }
+
+    // Simultaneous lethal hits have no natural last blow. Award the KO to the
+    // highest contribution, with attacker ID as a stable tie-breaker.
+    const creditedAttacker = [...contributions].sort(
+      (first, second) =>
+        second.damage - first.damage || first.attackerId.localeCompare(second.attackerId),
+    )[0];
+    if (creditedAttacker !== undefined) {
+      defeatPlayer(state, target, creditedAttacker.attackerId, now);
+    }
+  }
+
+  for (const attackerId of [...blockedAttackerIds].sort()) {
+    const attacker = state.players.get(attackerId);
+    if (attacker !== undefined) {
+      stunPlayer(attacker, now, MELEE_BLOCK_STUN_MS);
+    }
+  }
+  for (const target of survivingHitTargets) {
     stunPlayer(target, now, MELEE_HIT_STUN_MS);
   }
 }
@@ -1151,9 +1277,7 @@ export function stepArena(
       for (const player of combatants) {
         advanceMeleeState(player, substepNow);
       }
-      for (const player of combatants) {
-        resolveMeleeStrike(state, player, substepNow);
-      }
+      resolveMeleeStrikes(state, combatants, substepNow);
     }
 
     for (const player of state.players.values()) {
@@ -1252,6 +1376,12 @@ function restorePlayer(value: unknown): PlayerState | null {
 
   const cooldowns = isRecord(value.cooldowns) ? value.cooldowns : {};
   const aim = normalizedDirection(finite(value.aimX, 1), finite(value.aimY), 1, 0);
+  const meleeAim = normalizedDirection(
+    finite(value.meleeAimX, aim.x),
+    finite(value.meleeAimY, aim.y),
+    aim.x,
+    aim.y,
+  );
   const maxHealth = boundedNumber(value.maxHealth, MAX_HEALTH, 1, MAX_HEALTH);
   const combatPhase = restoredCombatPhase(value.combatPhase);
   return {
@@ -1290,6 +1420,8 @@ function restorePlayer(value: unknown): PlayerState | null {
     input: emptyInput(),
     lastInputAt: null,
     lastSeq: Math.floor(boundedNumber(value.lastSeq, -1, -1, 2_147_483_647)),
+    meleeAimX: meleeAim.x,
+    meleeAimY: meleeAim.y,
     meleeReleaseRequested: value.meleeReleaseRequested === true,
     meleeHitResolved: value.meleeHitResolved === true,
     feintCooldownUntil: safeTime(value.feintCooldownUntil),

@@ -44,6 +44,119 @@ interface DungeonKit {
   readonly all: AssetContainer[];
 }
 
+const ENGINE_OPTIONS = {
+  antialias: true,
+  adaptToDeviceRatio: false,
+  powerPreference: "high-performance" as const,
+};
+const WEBGPU_TIMEOUT_MS = 8_000;
+
+class WebGpuTimeoutError extends Error {}
+
+async function withWebGpuTimeout<T>(
+  operation: PromiseLike<T>,
+  label: string,
+): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new WebGpuTimeoutError(`${label} timed out.`));
+        }, WEBGPU_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
+async function initializeWebGpuEngine(engine: WebGPUEngine): Promise<void> {
+  const initialization = engine.initAsync();
+  try {
+    await withWebGpuTimeout(initialization, "WebGPU initialization");
+  } catch (error) {
+    if (error instanceof WebGpuTimeoutError) {
+      // initAsync cannot be cancelled. If the abandoned operation eventually
+      // settles, dispose a second time so a late device cannot outlive the
+      // WebGL fallback or retain GPU resources.
+      void initialization.then(
+        () => disposeEngineSafely(engine),
+        () => disposeEngineSafely(engine),
+      );
+    }
+    throw error;
+  }
+}
+
+function disposeSafely(disposable: { dispose(): void } | undefined): void {
+  if (!disposable) return;
+  try {
+    disposable.dispose();
+  } catch {
+    // Preserve the original initialization error while continuing cleanup.
+  }
+}
+
+function disposeEngineSafely(engine: AbstractEngine | undefined): void {
+  if (!engine) return;
+  try {
+    engine.dispose();
+  } catch {
+    // WebGPUEngine.dispose assumes initAsync reached its final setup phase.
+    // If setup failed earlier, destroying its partial device still releases all
+    // GPU allocations before the WebGL fallback claims the canvas.
+    const partialEngine = engine as AbstractEngine & {
+      _device?: { destroy(): void };
+    };
+    try {
+      partialEngine._device?.destroy();
+    } catch {
+      // Cleanup must not hide the initialization failure or block fallback.
+    }
+  }
+}
+
+async function createEngine(
+  canvas: HTMLCanvasElement,
+  forceWebGl: boolean,
+): Promise<AbstractEngine> {
+  if (!forceWebGl) {
+    let webGpuSupported = false;
+    try {
+      webGpuSupported = await withWebGpuTimeout(
+        WebGPUEngine.IsSupportedAsync,
+        "WebGPU support probe",
+      );
+    } catch {
+      // A failed support probe is equivalent to an unavailable WebGPU backend.
+    }
+
+    if (webGpuSupported) {
+      let webGpuEngine: WebGPUEngine | undefined;
+      try {
+        webGpuEngine = new WebGPUEngine(canvas, ENGINE_OPTIONS);
+        await initializeWebGpuEngine(webGpuEngine);
+        return webGpuEngine;
+      } catch (error) {
+        disposeEngineSafely(webGpuEngine);
+        console.warn(
+          "WebGPU initialization failed; falling back to WebGL 2.",
+          error,
+        );
+      }
+    }
+  }
+
+  return new Engine(
+    canvas,
+    true,
+    { powerPreference: ENGINE_OPTIONS.powerPreference },
+    false,
+  );
+}
+
 function material(
   scene: Scene,
   name: string,
@@ -93,19 +206,28 @@ function instantiate(
 }
 
 async function loadDungeonKit(scene: Scene): Promise<DungeonKit> {
-  const root = "/assets/dungeon/";
-  const [floor, barrier, pillar, torch] = await Promise.all([
+  const root = "/assets/arena-v1/dungeon/";
+  const results = await Promise.allSettled([
     SceneLoader.LoadAssetContainerAsync(root, "floor_tile_large.gltf.glb", scene),
     SceneLoader.LoadAssetContainerAsync(root, "barrier.gltf.glb", scene),
     SceneLoader.LoadAssetContainerAsync(root, "pillar.gltf.glb", scene),
     SceneLoader.LoadAssetContainerAsync(root, "torch_lit.gltf.glb", scene),
   ]);
+  const loaded = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") {
+    for (const container of loaded) disposeSafely(container);
+    throw failure.reason;
+  }
+  const [floor, barrier, pillar, torch] = loaded;
   return {
-    floor,
-    barrier,
-    pillar,
-    torch,
-    all: [floor, barrier, pillar, torch],
+    floor: floor!,
+    barrier: barrier!,
+    pillar: pillar!,
+    torch: torch!,
+    all: loaded,
   };
 }
 
@@ -145,57 +267,80 @@ export class BabylonArenaRenderer implements ArenaRenderer {
 
   static async create(canvas: HTMLCanvasElement): Promise<BabylonArenaRenderer> {
     const forceWebGl = new URLSearchParams(window.location.search).get("renderer") === "webgl2";
-    const engine: AbstractEngine = !forceWebGl && (await WebGPUEngine.IsSupportedAsync)
-      ? await WebGPUEngine.CreateAsync(canvas, {
-          antialias: true,
-          adaptToDeviceRatio: false,
-          powerPreference: "high-performance",
-        })
-      : new Engine(
-          canvas,
-          true,
-          { powerPreference: "high-performance" },
-          false,
-        );
-    const desiredPixelRatio = Math.min(1.5, window.devicePixelRatio || 1);
-    engine.setHardwareScalingLevel((window.devicePixelRatio || 1) / desiredPixelRatio);
+    let engine: AbstractEngine | undefined;
+    let scene: Scene | undefined;
+    let fighterFactory: FighterFactory | undefined;
+    let dungeon: DungeonKit | undefined;
 
-    const scene = new Scene(engine);
-    scene.clearColor = new Color4(0.012, 0.018, 0.035, 1);
-    scene.ambientColor = new Color3(0.12, 0.13, 0.2);
-    scene.fogMode = Scene.FOGMODE_EXP2;
-    scene.fogDensity = 0.016;
-    scene.fogColor = new Color3(0.018, 0.025, 0.06);
+    try {
+      engine = await createEngine(canvas, forceWebGl);
+      const desiredPixelRatio = Math.min(1.5, window.devicePixelRatio || 1);
+      engine.setHardwareScalingLevel((window.devicePixelRatio || 1) / desiredPixelRatio);
 
-    const fill = new HemisphericLight("vault-fill", new Vector3(0.15, 1, -0.2), scene);
-    fill.intensity = 0.72;
-    fill.diffuse = new Color3(0.38, 0.48, 0.7);
-    fill.groundColor = new Color3(0.06, 0.035, 0.09);
+      scene = new Scene(engine);
+      scene.clearColor = new Color4(0.012, 0.018, 0.035, 1);
+      scene.ambientColor = new Color3(0.12, 0.13, 0.2);
+      scene.fogMode = Scene.FOGMODE_EXP2;
+      scene.fogDensity = 0.016;
+      scene.fogColor = new Color3(0.018, 0.025, 0.06);
 
-    const moon = new DirectionalLight("vault-moon", new Vector3(-0.42, -1, 0.3), scene);
-    moon.position = new Vector3(11, 18, -8);
-    moon.intensity = 2.1;
-    moon.diffuse = new Color3(0.68, 0.82, 1);
-    const shadows = new ShadowGenerator(1024, moon);
-    shadows.usePercentageCloserFiltering = true;
-    shadows.bias = 0.0008;
-    shadows.normalBias = 0.035;
+      const fill = new HemisphericLight("vault-fill", new Vector3(0.15, 1, -0.2), scene);
+      fill.intensity = 0.72;
+      fill.diffuse = new Color3(0.38, 0.48, 0.7);
+      fill.groundColor = new Color3(0.06, 0.035, 0.09);
 
-    const glow = new GlowLayer("arcane-glow", scene, { blurKernelSize: 24 });
-    glow.intensity = 0.72;
+      const moon = new DirectionalLight("vault-moon", new Vector3(-0.42, -1, 0.3), scene);
+      moon.position = new Vector3(11, 18, -8);
+      moon.intensity = 2.1;
+      moon.diffuse = new Color3(0.68, 0.82, 1);
+      const shadows = new ShadowGenerator(1024, moon);
+      shadows.usePercentageCloserFiltering = true;
+      shadows.bias = 0.0008;
+      shadows.normalBias = 0.035;
 
-    const [fighterFactory, dungeon] = await Promise.all([
-      FighterFactory.load(scene, shadows),
-      loadDungeonKit(scene),
-    ]);
-    return new BabylonArenaRenderer(
-      canvas,
-      engine,
-      fighterFactory,
-      dungeon,
-      shadows,
-      scene,
-    );
+      const glow = new GlowLayer("arcane-glow", scene, { blurKernelSize: 24 });
+      glow.intensity = 0.72;
+
+      const [fighterResult, dungeonResult] = await Promise.allSettled([
+        FighterFactory.load(scene, shadows),
+        loadDungeonKit(scene),
+      ]);
+      if (fighterResult.status === "fulfilled") {
+        fighterFactory = fighterResult.value;
+      }
+      if (dungeonResult.status === "fulfilled") {
+        dungeon = dungeonResult.value;
+      }
+      if (fighterResult.status === "rejected") throw fighterResult.reason;
+      if (dungeonResult.status === "rejected") throw dungeonResult.reason;
+      if (!fighterFactory || !dungeon) {
+        throw new Error("Arena assets did not finish loading.");
+      }
+
+      return new BabylonArenaRenderer(
+        canvas,
+        engine,
+        fighterFactory,
+        dungeon,
+        shadows,
+        scene,
+      );
+    } catch (error) {
+      if (scene) {
+        try {
+          await scene.whenReadyAsync();
+        } catch {
+          // Disposal below remains the source of truth for failed scene setup.
+        }
+      }
+      disposeSafely(fighterFactory);
+      if (dungeon) {
+        for (const container of dungeon.all) disposeSafely(container);
+      }
+      disposeSafely(scene);
+      disposeEngineSafely(engine);
+      throw error;
+    }
   }
 
   render(frame: ArenaFrame): void {

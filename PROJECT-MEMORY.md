@@ -23,12 +23,14 @@
 - Separate Cloudflare Worker plus one SQLite Durable Object per room.
 - Server-authoritative 30 Hz movement, collisions, held draw/release attacks,
   four combat directions, charge damage, directional guards, feints, hit/block
-  stuns, spell interactions, health, KOs, scores, and respawns.
+  stuns, spell interactions, health, KOs, scores, and respawns. Attack facing is
+  locked when drawing, pillars stop melee traces, and strikes due on one tick
+  resolve as a batch so simultaneous trades do not depend on player ID order.
 - The melee behavior adapts timing/state ideas from the MIT AMS project while
   retaining server-owned hit validation; no Roblox binaries/assets/IDs were
   copied.
-- Public room server deployment `71326836-ff07-431e-874a-59ac3979928d` passed a
-  two-live-WebSocket attack/block smoke test after the melee update.
+- Public room server:
+  `https://arcane-arena-server.drdeandrehyde.workers.dev`.
 - Public frontend deployed at
   `https://arcane-arena-duels.tomdavie016.chatgpt.site`.
 - Public source repository: `https://github.com/PrompDev/arcane-arena`.

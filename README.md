@@ -110,16 +110,16 @@ The multiplayer server and frontend are separate deployments. Deploy in this
 order:
 
 1. From `arena-server/`, run `npm run check`, `npm test`, then `npm run deploy`.
-2. In the frontend build environment, set `NEXT_PUBLIC_ARENA_SERVER` to the
-   Worker's public HTTPS or WSS origin, for example
-   `https://arcane-arena-server.<account>.workers.dev`.
+2. If deploying your own server, set `NEXT_PUBLIC_ARENA_SERVER` in the frontend
+   build environment to that Worker's public HTTPS or WSS origin.
 3. From the project root, run `npm run build`, then publish the saved frontend
    version through Sites.
 4. Open the hosted site in two browser sessions, join one room, and smoke-test
    movement, all four actions, damage, respawn, and reconnection.
 
-`NEXT_PUBLIC_ARENA_SERVER` is consumed at build time. A hosted frontend without
-it deliberately stays offline rather than silently trying localhost, and a
-Sites deployment by itself is therefore not a multiplayer deployment.
+`NEXT_PUBLIC_ARENA_SERVER` is consumed at build time. When it is omitted,
+localhost uses `ws://localhost:8787` and hosted builds use Arcane Arena's public
+authoritative Worker at
+`https://arcane-arena-server.drdeandrehyde.workers.dev`.
 
 See `arena-server/README.md` for protocol and simulation details.

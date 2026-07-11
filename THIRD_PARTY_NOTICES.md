@@ -34,5 +34,9 @@ audio from *Wizard of Legend*.
 ## Babylon.js
 
 - Source: <https://github.com/BabylonJS/Babylon.js>
-- Packages: `@babylonjs/core` and `@babylonjs/loaders`
+- Packages: `@babylonjs/core@9.16.1` and `@babylonjs/loaders@9.16.1`
 - Licence: Apache-2.0
+- Licence copy: `public/assets/licenses/Babylon-license.md` (the installed
+  packages contain identical `license.md` files)
+- Notice copy: `public/assets/licenses/Babylon-NOTICE.md` (from the installed
+  `@babylonjs/core` package)

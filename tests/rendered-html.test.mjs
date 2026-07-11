@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -76,4 +76,19 @@ test("ships the real-time 3D combat contract without starter imports", async () 
   assert.match(page, /<ArenaGame \/>/);
   assert.doesNotMatch(page, /_sites-preview|codex-preview|SkeletonPreview/);
   assert.match(layout, /themeColor: "#05070b"/);
+});
+
+test("bakes the public authoritative server into the production client", async () => {
+  const assetsDirectory = new URL("../dist/client/assets/", import.meta.url);
+  const clientAssets = await readdir(assetsDirectory);
+  const arenaBundle = clientAssets.find(
+    (name) => name.startsWith("ArenaGame-") && name.endsWith(".js"),
+  );
+
+  assert.ok(arenaBundle, "expected a built ArenaGame client bundle");
+  const clientBundle = await readFile(new URL(arenaBundle, assetsDirectory), "utf8");
+  assert.match(
+    clientBundle,
+    /https:\/\/arcane-arena-server\.drdeandrehyde\.workers\.dev/,
+  );
 });

@@ -39,6 +39,8 @@ deaths, and respawns are decided by the server.
   2,000 ms maximum, scaling sword damage from 20 to 40. The server resolves the
   nearest opponent once in the weapon's forward range and direction-specific
   arc, so a release cannot damage the same target on multiple ticks.
+- Attack aim is locked when the draw begins, pillars block melee traces, and all
+  strikes due on the same tick are planned before damage or stuns are applied.
 - Feint cancels a draw or the first 350 ms of a release before its hit frame.
   Feints have a 500 ms cooldown. A landed hit stuns its target for 300 ms.
 - A directional block must face the attacker within a 65-degree half-angle and

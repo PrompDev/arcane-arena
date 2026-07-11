@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ARENA_DESCRIPTION,
   INPUT_FRESHNESS_TIMEOUT_MS,
   MELEE_BLOCK_STUN_MS,
   MELEE_HIT_STUN_MS,
@@ -549,5 +550,124 @@ describe("authoritative arena simulation", () => {
 
     expect(target.health).toBe(100 - MELEE_MIN_DAMAGE);
     expect(attacker.meleeHitResolved).toBe(true);
+  });
+
+  it("resolves simultaneous lethal trades independently of player insertion order", () => {
+    function runTrade(insertionOrder: readonly [string, string]) {
+      const start = 140_000;
+      const state = createArenaState(`trade-${insertionOrder.join("-")}`);
+      for (const id of insertionOrder) {
+        addPlayer(state, id, id, start);
+      }
+
+      const alpha = state.players.get("alpha");
+      const zulu = state.players.get("zulu");
+      if (alpha === undefined || zulu === undefined) {
+        throw new Error("Expected both trade players");
+      }
+
+      alpha.x = 4;
+      alpha.y = 7;
+      alpha.health = MELEE_MIN_DAMAGE;
+      zulu.x = 5.5;
+      zulu.y = 7;
+      zulu.health = MELEE_MIN_DAMAGE;
+
+      applyPlayerInput(alpha, input(1, { attackHeld: true, aimX: 1 }), start);
+      applyPlayerInput(zulu, input(1, { attackHeld: true, aimX: -1 }), start);
+      stepArena(state, start);
+
+      const release = start + MELEE_MIN_DRAW_MS;
+      applyPlayerInput(alpha, input(2, { attackHeld: false, aimX: 1 }), release);
+      applyPlayerInput(zulu, input(2, { attackHeld: false, aimX: -1 }), release);
+      stepArena(state, release);
+
+      applyPlayerInput(alpha, input(3, { aimX: 1 }), release + 200);
+      applyPlayerInput(zulu, input(3, { aimX: -1 }), release + 200);
+      stepArena(state, release + 200);
+
+      const hitAt = release + MELEE_RELEASE_HIT_AT_MS;
+      applyPlayerInput(alpha, input(4, { aimX: 1 }), hitAt);
+      applyPlayerInput(zulu, input(4, { aimX: -1 }), hitAt);
+      stepArena(state, hitAt);
+
+      return [alpha, zulu].map((player) => ({
+        id: player.id,
+        alive: player.alive,
+        health: player.health,
+        kills: player.kills,
+        deaths: player.deaths,
+      }));
+    }
+
+    const forward = runTrade(["alpha", "zulu"]);
+    const reversed = runTrade(["zulu", "alpha"]);
+
+    expect(forward).toEqual(reversed);
+    expect(forward).toEqual([
+      { id: "alpha", alive: false, health: 0, kills: 1, deaths: 1 },
+      { id: "zulu", alive: false, health: 0, kills: 1, deaths: 1 },
+    ]);
+  });
+
+  it("locks attack aim when drawing so a release cannot snap 180 degrees", () => {
+    const start = 150_000;
+    const state = createArenaState("locked-melee-aim");
+    const attacker = addPlayer(state, "attacker", "Blade", start);
+    const rightTarget = addPlayer(state, "right-target", "Right", start);
+    const leftTarget = addPlayer(state, "left-target", "Left", start);
+    attacker.x = 4;
+    attacker.y = 7;
+    rightTarget.x = 5.5;
+    rightTarget.y = 7;
+    leftTarget.x = 2.5;
+    leftTarget.y = 7;
+
+    applyPlayerInput(attacker, input(1, { attackHeld: true, aimX: 1 }), start);
+    stepArena(state, start);
+    expect(attacker.meleeAimX).toBe(1);
+
+    const release = start + MELEE_MIN_DRAW_MS;
+    applyPlayerInput(attacker, input(2, { attackHeld: false, aimX: -1 }), release);
+    stepArena(state, release);
+    applyPlayerInput(attacker, input(3, { aimX: -1 }), release + 200);
+    stepArena(state, release + 200);
+    const hitAt = release + MELEE_RELEASE_HIT_AT_MS;
+    applyPlayerInput(attacker, input(4, { aimX: -1 }), hitAt);
+    stepArena(state, hitAt);
+
+    expect(attacker.aimX).toBe(-1);
+    expect(rightTarget.health).toBe(100 - MELEE_MIN_DAMAGE);
+    expect(leftTarget.health).toBe(100);
+  });
+
+  it("blocks melee strikes whose path crosses an arena pillar", () => {
+    const start = 160_000;
+    const state = createArenaState("pillar-blocked-melee");
+    const attacker = addPlayer(state, "attacker", "Blade", start);
+    const target = addPlayer(state, "target", "Guard", start);
+    const pillar = ARENA_DESCRIPTION.pillars[0];
+    if (pillar === undefined) {
+      throw new Error("Expected the arena to have a pillar");
+    }
+
+    attacker.x = pillar.x - pillar.r - 0.38;
+    attacker.y = pillar.y;
+    target.x = pillar.x + pillar.r + 0.38;
+    target.y = pillar.y;
+
+    applyPlayerInput(attacker, input(1, { attackHeld: true, aimX: 1 }), start);
+    stepArena(state, start);
+    const release = start + MELEE_MIN_DRAW_MS;
+    applyPlayerInput(attacker, input(2, { attackHeld: false, aimX: 1 }), release);
+    stepArena(state, release);
+    applyPlayerInput(attacker, input(3, { aimX: 1 }), release + 200);
+    stepArena(state, release + 200);
+    const hitAt = release + MELEE_RELEASE_HIT_AT_MS;
+    applyPlayerInput(attacker, input(4, { aimX: 1 }), hitAt);
+    stepArena(state, hitAt);
+
+    expect(attacker.meleeHitResolved).toBe(true);
+    expect(target.health).toBe(100);
   });
 });

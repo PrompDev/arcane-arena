@@ -237,19 +237,33 @@ export class FighterFactory {
   ) {}
 
   static async load(scene: Scene, shadows: ShadowGenerator): Promise<FighterFactory> {
-    const [fighterContainer, weaponContainer] = await Promise.all([
+    const [fighterResult, weaponResult] = await Promise.allSettled([
       SceneLoader.LoadAssetContainerAsync(
-        "/assets/fighters/",
+        "/assets/arena-v1/fighters/",
         "arcane-mage.glb",
         scene,
       ),
       SceneLoader.LoadAssetContainerAsync(
-        "/assets/props/",
+        "/assets/arena-v1/props/",
         "sword_1handed.gltf",
         scene,
       ),
     ]);
-    return new FighterFactory(fighterContainer, weaponContainer, scene, shadows);
+
+    if (fighterResult.status === "rejected" || weaponResult.status === "rejected") {
+      if (fighterResult.status === "fulfilled") fighterResult.value.dispose();
+      if (weaponResult.status === "fulfilled") weaponResult.value.dispose();
+      throw fighterResult.status === "rejected"
+        ? fighterResult.reason
+        : weaponResult.reason;
+    }
+
+    return new FighterFactory(
+      fighterResult.value,
+      weaponResult.value,
+      scene,
+      shadows,
+    );
   }
 
   create(id: string, color: ArenaPlayer["color"]): FighterView {

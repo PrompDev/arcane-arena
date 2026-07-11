@@ -27,6 +27,8 @@ import {
 const INPUT_INTERVAL_MS = 1000 / 30;
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CONFIGURED_SERVER_ORIGIN = process.env.NEXT_PUBLIC_ARENA_SERVER?.trim();
+const PUBLIC_SERVER_ORIGIN =
+  "https://arcane-arena-server.drdeandrehyde.workers.dev";
 
 type ConnectionState =
   | "idle"
@@ -159,10 +161,9 @@ function endpointFor(room: string, name: string): string {
   const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(
     window.location.hostname,
   );
-  if (!CONFIGURED_SERVER_ORIGIN && !isLocal) {
-    throw new Error("NEXT_PUBLIC_ARENA_SERVER is required outside local play");
-  }
-  const origin = CONFIGURED_SERVER_ORIGIN || "ws://localhost:8787";
+  const origin =
+    CONFIGURED_SERVER_ORIGIN ||
+    (isLocal ? "ws://localhost:8787" : PUBLIC_SERVER_ORIGIN);
   const endpoint = new URL(origin, window.location.href);
   if (endpoint.protocol === "http:") endpoint.protocol = "ws:";
   if (endpoint.protocol === "https:") endpoint.protocol = "wss:";
@@ -356,6 +357,36 @@ function cooldownLabel(until: number, now: number): string {
   return remaining > 0 ? `${(remaining / 1000).toFixed(1)}s` : "Ready";
 }
 
+function requestPointerLockSafely(
+  canvas: HTMLCanvasElement,
+  onFailure: () => void,
+): void {
+  const requestPointerLock = Reflect.get(canvas, "requestPointerLock");
+  if (typeof requestPointerLock !== "function") {
+    onFailure();
+    return;
+  }
+
+  try {
+    const result: unknown = Reflect.apply(requestPointerLock, canvas, []);
+    void Promise.resolve(result).catch(onFailure);
+  } catch {
+    onFailure();
+  }
+}
+
+function exitPointerLockSafely(documentTarget: Document): void {
+  const exitPointerLock = Reflect.get(documentTarget, "exitPointerLock");
+  if (typeof exitPointerLock !== "function") return;
+
+  try {
+    const result: unknown = Reflect.apply(exitPointerLock, documentTarget, []);
+    void Promise.resolve(result).catch(() => undefined);
+  } catch {
+    // Pointer lock is optional; leaving the arena must still complete.
+  }
+}
+
 export default function ArenaGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ArenaRenderer | null>(null);
@@ -369,6 +400,7 @@ export default function ArenaGame() {
   const audioRef = useRef<ArenaAudio | null>(null);
   const soundEnabledRef = useRef(true);
   const pointerLockFallbackRef = useRef(false);
+  const pointerLockRequestPendingRef = useRef(false);
   const seenEffectsRef = useRef(new Set<string>());
   const aliveRef = useRef(new Map<string, boolean>());
   const inputRef = useRef<InputMemory>({
@@ -413,6 +445,24 @@ export default function ArenaGame() {
   const playSound = useCallback((sound: ArenaSound) => {
     if (soundEnabledRef.current) audioRef.current?.play(sound);
   }, []);
+
+  const enablePointerLockFallback = useCallback(() => {
+    if (!pointerLockRequestPendingRef.current) return;
+    pointerLockRequestPendingRef.current = false;
+    pointerLockFallbackRef.current = true;
+    setPointerLocked(true);
+  }, []);
+
+  const requestPointerCapture = useCallback((canvas: HTMLCanvasElement) => {
+    if (
+      document.pointerLockElement === canvas ||
+      pointerLockFallbackRef.current ||
+      pointerLockRequestPendingRef.current
+    ) return;
+
+    pointerLockRequestPendingRef.current = true;
+    requestPointerLockSafely(canvas, enablePointerLockFallback);
+  }, [enablePointerLockFallback]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -810,10 +860,7 @@ export default function ArenaGame() {
         document.pointerLockElement !== canvas &&
         !pointerLockFallbackRef.current
       ) {
-        void canvas.requestPointerLock().catch(() => {
-          pointerLockFallbackRef.current = true;
-          setPointerLocked(true);
-        });
+        requestPointerCapture(canvas);
         event.preventDefault();
         return;
       }
@@ -832,9 +879,13 @@ export default function ArenaGame() {
       if (event.button === 2) input.blockHeld = false;
     };
     const onContextMenu = (event: MouseEvent) => event.preventDefault();
-    const onPointerLockChange = () => setPointerLocked(
-      document.pointerLockElement === canvas || pointerLockFallbackRef.current,
-    );
+    const onPointerLockChange = () => {
+      const locked = document.pointerLockElement === canvas;
+      pointerLockRequestPendingRef.current = false;
+      if (locked) pointerLockFallbackRef.current = false;
+      setPointerLocked(locked || pointerLockFallbackRef.current);
+    };
+    const onPointerLockError = () => enablePointerLockFallback();
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
     window.addEventListener("keyup", onKeyUp);
@@ -845,6 +896,7 @@ export default function ArenaGame() {
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("pointerlockchange", onPointerLockChange);
+    document.addEventListener("pointerlockerror", onPointerLockError);
 
     const inputTimer = window.setInterval(() => {
       let moveX =
@@ -963,9 +1015,11 @@ export default function ArenaGame() {
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("contextmenu", onContextMenu);
       document.removeEventListener("pointerlockchange", onPointerLockChange);
+      document.removeEventListener("pointerlockerror", onPointerLockError);
+      pointerLockRequestPendingRef.current = false;
       onBlur();
     };
-  }, [entered, playSound]);
+  }, [enablePointerLockFallback, entered, playSound, requestPointerCapture]);
 
   const localPlayer = useMemo(
     () => players.find((player) => player.id === localId) || null,
@@ -993,7 +1047,10 @@ export default function ArenaGame() {
   };
 
   const leaveArena = () => {
-    if (document.pointerLockElement === canvasRef.current) document.exitPointerLock();
+    if (document.pointerLockElement === canvasRef.current) {
+      exitPointerLockSafely(document);
+    }
+    pointerLockRequestPendingRef.current = false;
     setEntered(false);
     setConnection("idle");
     setPlayers([]);
@@ -1039,11 +1096,10 @@ export default function ArenaGame() {
   };
 
   const capturePointer = () => {
-    canvasRef.current?.focus({ preventScroll: true });
-    void canvasRef.current?.requestPointerLock().catch(() => {
-      pointerLockFallbackRef.current = true;
-      setPointerLocked(true);
-    });
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.focus({ preventScroll: true });
+    requestPointerCapture(canvas);
   };
 
   return (
