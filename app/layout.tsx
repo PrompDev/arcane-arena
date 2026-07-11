@@ -15,7 +15,7 @@ export async function generateMetadata(): Promise<Metadata> {
       : "https");
   const socialImage = new URL("/og.png", `${protocol}://${host}`).toString();
   const description =
-    "Fast original multiplayer spell duels built for the browser with WebGPU.";
+    "A third-person multiplayer battlemage arena with directional melee, elemental spells, and native WebGPU rendering.";
 
   return {
     title: {
@@ -31,13 +31,13 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     openGraph: {
       type: "website",
-      title: "Arcane Arena — Multiplayer spell duels",
+      title: "Arcane Arena — 3D multiplayer battlemage duels",
       description,
       images: [{ url: socialImage, width: 1672, height: 941 }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Arcane Arena — Multiplayer spell duels",
+      title: "Arcane Arena — 3D multiplayer battlemage duels",
       description,
       images: [socialImage],
     },

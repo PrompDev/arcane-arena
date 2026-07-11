@@ -141,6 +141,13 @@ describe("Worker and ArenaRoom integration", () => {
     if (!isRecord(initialPlayer) || typeof initialPlayer.x !== "number") {
       throw new Error("Initial player was missing");
     }
+    expect(initialPlayer).toMatchObject({
+      combatPhase: "idle",
+      combatDirection: "up",
+      combatStartedAt: 0,
+      charge: 0,
+      weapon: "arcane-blade",
+    });
     const initialX = initialPlayer.x;
 
     inbox.socket.send(JSON.stringify({ type: "ping", clientTime: 1234 }));

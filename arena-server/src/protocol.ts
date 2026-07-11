@@ -18,6 +18,11 @@ export interface ArenaDescription {
   pillars: ArenaPillar[];
 }
 
+export const COMBAT_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export type CombatDirection = (typeof COMBAT_DIRECTIONS)[number];
+export type CombatPhase = "idle" | "drawing" | "releasing" | "blocking" | "stunned";
+export type WeaponType = "arcane-blade";
+
 export interface InputMessage {
   type: "input";
   seq: number;
@@ -29,6 +34,10 @@ export interface InputMessage {
   primary: boolean;
   secondary: boolean;
   utility: boolean;
+  attackHeld: boolean;
+  blockHeld: boolean;
+  feint: boolean;
+  combatDirection: CombatDirection;
 }
 
 export interface PingMessage {
@@ -62,6 +71,11 @@ export interface PlayerSnapshot extends Vec2 {
   soakedUntil: number;
   stunnedUntil: number;
   dashUntil: number;
+  combatPhase: CombatPhase;
+  combatDirection: CombatDirection;
+  combatStartedAt: number;
+  charge: number;
+  weapon: WeaponType;
   cooldowns: CooldownSnapshot;
 }
 
@@ -156,6 +170,18 @@ function boundedVector(x: unknown, y: unknown): Vec2 {
   };
 }
 
+function combatDirection(value: unknown): CombatDirection {
+  switch (value) {
+    case "up":
+    case "down":
+    case "left":
+    case "right":
+      return value;
+    default:
+      return "up";
+  }
+}
+
 export function parseClientMessage(raw: string): ClientMessage | null {
   if (
     raw.length === 0 ||
@@ -209,6 +235,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     primary: value.primary === true,
     secondary: value.secondary === true,
     utility: value.utility === true,
+    attackHeld: value.attackHeld === true,
+    blockHeld: value.blockHeld === true,
+    feint: value.feint === true,
+    combatDirection: combatDirection(value.combatDirection),
   };
 }
 

@@ -9,6 +9,7 @@ import {
   buildSnapshot,
   createArenaState,
   removePlayer,
+  resetPlayerInput,
   restoreArenaState,
   serializeArenaState,
   stepArena,
@@ -289,12 +290,7 @@ export class ArenaRoom extends DurableObject<Env> {
       this.state.room = attachment.room;
       const player = addPlayer(this.state, attachment.playerId, attachment.name, now);
       player.lastSeq = Math.max(player.lastSeq, attachment.lastSeq);
-      player.input.moveX = 0;
-      player.input.moveY = 0;
-      player.input.dashQueued = false;
-      player.input.primaryQueued = false;
-      player.input.secondaryQueued = false;
-      player.input.utilityQueued = false;
+      resetPlayerInput(player, true, now);
 
       connectedPlayerIds.add(attachment.playerId);
       this.connections.set(webSocket, {
@@ -334,6 +330,7 @@ export class ArenaRoom extends DurableObject<Env> {
     this.state.room = attachment.room;
     const player = addPlayer(this.state, attachment.playerId, attachment.name, now);
     player.lastSeq = Math.max(player.lastSeq, attachment.lastSeq);
+    resetPlayerInput(player, true, now);
     const restored: ConnectionRuntime = {
       attachment,
       windowStartedAt: now,

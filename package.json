@@ -14,9 +14,12 @@
     "test:server": "npm --prefix arena-server test",
     "check:server": "npm --prefix arena-server run check",
     "verify": "npm run test && npm run check:server && npm run test:server",
+    "smoke:live": "node scripts/live-smoke.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "@babylonjs/core": "^9.16.1",
+    "@babylonjs/loaders": "^9.16.1",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"

@@ -56,6 +56,15 @@ export interface ArenaCooldowns {
   readonly utility?: number;
 }
 
+export type ArenaCombatDirection = "up" | "down" | "left" | "right";
+
+export type ArenaCombatPhase =
+  | "idle"
+  | "drawing"
+  | "releasing"
+  | "blocking"
+  | "stunned";
+
 export interface ArenaPlayer extends ArenaPoint {
   readonly id: string;
   readonly name?: string;
@@ -80,6 +89,11 @@ export interface ArenaPlayer extends ArenaPoint {
   readonly isDashing?: boolean;
   readonly cooldowns?: ArenaCooldowns;
   readonly dashTrail?: readonly ArenaTrailPoint[];
+  readonly combatPhase?: ArenaCombatPhase;
+  readonly combatDirection?: ArenaCombatDirection;
+  readonly combatStartedAt?: number;
+  readonly charge?: number;
+  readonly weapon?: "arcane-blade";
 }
 
 export type ArenaSpellKind =
@@ -137,7 +151,11 @@ export type ArenaEffectKind =
   | "cinder-impact"
   | "death"
   | "respawn"
-  | "spawn";
+  | "spawn"
+  | "melee-swing"
+  | "melee-hit"
+  | "guard-impact"
+  | "feint";
 
 interface ArenaEffectGeometry {
   readonly maxRadius?: number;
@@ -179,13 +197,24 @@ export interface ArenaFrame {
   readonly localId?: string | null;
 }
 
-export type ArenaRendererMode = "webgpu" | "canvas2d";
+export type ArenaRendererMode = "webgpu" | "webgl2";
+export type ArenaCameraMode = "third-person" | "first-person";
+
+export interface ArenaControlBasis {
+  readonly forward: ArenaPoint;
+  readonly right: ArenaPoint;
+  readonly aim: ArenaPoint;
+}
 
 export interface ArenaRenderer {
   readonly mode: ArenaRendererMode;
   render(frame: ArenaFrame): void;
   /** Reconciles the canvas bitmap with its CSS size and device pixel ratio. */
   resize(): void;
+  addLookDelta(deltaX: number, deltaY: number): void;
+  setCameraMode(mode: ArenaCameraMode): void;
+  getCameraMode(): ArenaCameraMode;
+  getControlBasis(): ArenaControlBasis;
   destroy(): void;
 }
 

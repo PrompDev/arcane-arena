@@ -31,6 +31,23 @@ deaths, and respawns are decided by the server.
 - Movement accelerates quickly toward a 6.2 unit/s top speed and uses strong
   friction when input stops.
 - Dash is a short 14.2 unit/s burst with a 720 ms recharge.
+- The Arcane Blade uses an authoritative four-direction draw/release state
+  machine. `up` is an overhead cut, `down` is a stab, and `left`/`right` are
+  sweeping slices. A press starts drawing and release commits the attack after
+  a minimum 350 ms draw.
+- Charge is normalized from `0` to `1` between the 350 ms minimum draw and the
+  2,000 ms maximum, scaling sword damage from 20 to 40. The server resolves the
+  nearest opponent once in the weapon's forward range and direction-specific
+  arc, so a release cannot damage the same target on multiple ticks.
+- Attack aim is locked when the draw begins, pillars block melee traces, and all
+  strikes due on the same tick are planned before damage or stuns are applied.
+- Feint cancels a draw or the first 350 ms of a release before its hit frame.
+  Feints have a 500 ms cooldown. A landed hit stuns its target for 300 ms.
+- A directional block must face the attacker within a 65-degree half-angle and
+  cover the incoming line. Overhead and stab attacks use matching `up`/`down`
+  blocks; lateral attacks are mirrored from the defender's view (`left` attack
+  requires `right` block and vice versa). A successful block deals no damage
+  and stuns the attacker for 650 ms.
 - Cinder Shot is a rapid 12-damage projectile with a 170 ms recharge.
 - Tide Ring deals 8 damage, pushes nearby opponents, and applies `soaked` for
   four seconds.
@@ -53,14 +70,20 @@ Client input:
   "dash": false,
   "primary": false,
   "secondary": false,
-  "utility": false
+  "utility": false,
+  "attackHeld": false,
+  "blockHeld": false,
+  "feint": false,
+  "combatDirection": "up"
 }
 ```
 
 Movement and aim are normalized and bounded to the unit circle. Sequences are
 bounded integers and stale inputs are ignored. Action fields only accept the
-literal boolean `true`. Text frames are capped at 2,048 UTF-8 bytes, and each
-connection is limited to 120 messages per one-second window.
+literal boolean `true`. Combat direction accepts only `up`, `down`, `left`, or
+`right` and safely defaults to `up`; clients using the older packet shape safely
+default all melee actions to inactive. Text frames are capped at 2,048 UTF-8
+bytes, and each connection is limited to 120 messages per one-second window.
 
 Clock probe:
 
@@ -97,6 +120,11 @@ Snapshots:
     id, name, x, y, vx, vy, aimX, aimY, radius,
     health, maxHealth, kills, deaths, alive, respawnAt,
     soakedUntil, stunnedUntil, dashUntil,
+    combatPhase: "idle" | "drawing" | "releasing" | "blocking" | "stunned",
+    combatDirection: "up" | "down" | "left" | "right",
+    combatStartedAt,
+    charge,
+    weapon: "arcane-blade",
     cooldowns: { dash, primary, secondary, utility }
   }],
   projectiles: [{
