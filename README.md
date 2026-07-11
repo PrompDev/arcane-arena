@@ -104,6 +104,10 @@ npm run lint
 runs the Durable Object simulation and protocol tests. Server-only commands are
 also available through `npm run check:server` and `npm run test:server`.
 
+After deploying the public Worker, run `npm run smoke:live`. It opens two real
+WebSocket clients, moves them into range, and verifies a directional block,
+locked attack facing, and a simultaneous melee trade against production.
+
 ## Deploy
 
 The multiplayer server and frontend are separate deployments. Deploy in this
