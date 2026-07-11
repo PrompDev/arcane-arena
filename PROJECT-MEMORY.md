@@ -17,14 +17,14 @@
 - Server-authoritative 30 Hz movement, collisions, spell interactions, health,
   KOs, scores, and respawns.
 - Public room server deployed and verified with two live WebSocket clients.
+- Public frontend deployed at
+  `https://arcane-arena-duels.tomdavie016.chatgpt.site`.
 - Two-client room joining, shared authoritative movement, and projectile
   replication are covered by both automated and live smoke tests.
 
 ## Next actions
 
-1. Make the owner-only Sites deployment public when the owner explicitly
-   approves access for anyone with the link.
-2. Add identity-preserving reconnection and tune client prediction from live
+1. Add identity-preserving reconnection and tune client prediction from live
    latency playtests.
-3. Resolve same-tick spell trades fairly before expanding modes,
+2. Resolve same-tick spell trades fairly before expanding modes,
    matchmaking, progression, or art production.

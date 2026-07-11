@@ -7,6 +7,13 @@ Canvas 2D when WebGPU is unavailable.
 
 No code, art, audio, or other assets from *Wizard of Legend* are included.
 
+## Play online
+
+The public prototype is available at
+[arcane-arena-duels.tomdavie016.chatgpt.site](https://arcane-arena-duels.tomdavie016.chatgpt.site).
+Create a room, copy its five-character invite link, and open that link on up to
+four computers or browser sessions.
+
 ## Requirements
 
 - Node.js 22.13 or newer
