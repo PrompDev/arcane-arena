@@ -19,6 +19,7 @@
 - Public room server deployed and verified with two live WebSocket clients.
 - Public frontend deployed at
   `https://arcane-arena-duels.tomdavie016.chatgpt.site`.
+- Public source repository: `https://github.com/PrompDev/arcane-arena`.
 - Two-client room joining, shared authoritative movement, and projectile
   replication are covered by both automated and live smoke tests.
 
